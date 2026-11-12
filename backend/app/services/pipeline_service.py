@@ -20,17 +20,23 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.ml_pipeline import pdf_handler, renderer
-from app.ml_pipeline.llm_service import analyze_document, embed_texts, vision_extract_text
+from app.ml_pipeline.llm_service import (
+    analyze_document,
+    correct_page_text,
+    embed_texts,
+    vision_extract_text,
+)
 from app.ml_pipeline.ocr_engine import (
     recognize_image,
     resolve_engine,
     words_to_boxes,
 )
-from app.ml_pipeline.preprocessor import preprocess
 from app.ml_pipeline.text_utils import chunk_text, normalize_text
 from app.models.document import Document, DocumentChunk, DocumentStatus, ExtractedData, OcrPage
-from app.services.events import bus
+from app.models.user import new_uuid
+from app.services.events import publish_event
 from app.services.storage_service import storage
+from app.services.vector_store import save_pg_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +46,7 @@ _task_registry: dict[str, asyncio.Task] = {}
 
 
 async def publish_status(document: Document, status: str, progress: int, message: str | None = None) -> None:
-    await bus.publish(
+    await publish_event(
         {
             "document_id": document.id,
             "filename": document.filename,
@@ -173,16 +179,22 @@ async def _extract_pages(document: Document) -> list[dict]:
             )
         return pages
 
-    # изображения (сканы/фото)
+    # изображения (сканы/фото); многостраничный TIFF обрабатываем постранично
     data = await storage.get(document.s3_key_original)
-    from PIL import Image
-
     import io
 
+    from PIL import Image
+
+    pngs: list[bytes] = []
     with Image.open(io.BytesIO(data)) as image:
-        width, height = image.size
-        png = data if suffix == ".png" else _to_png(image)
-    return [await _ocr_page(1, png, width, height)]
+        for index in range(getattr(image, "n_frames", 1)):
+            image.seek(index)
+            pngs.append(_to_png(image))
+    for number, png in enumerate(pngs, start=1):
+        with Image.open(io.BytesIO(png)) as frame:
+            width, height = frame.size
+        pages.append(await _ocr_page(number, png, width, height))
+    return pages
 
 
 def _to_png(image) -> bytes:
@@ -194,64 +206,67 @@ def _to_png(image) -> bytes:
 
 
 async def _ocr_page(number: int, png: bytes, width: int, height: int) -> dict:
-    """Распознаёт страницу выбранным движком (Tesseract или локальная VLM)."""
+    """Распознаёт страницу выбранным движком (Tesseract или локальная VLM).
+
+    Все координаты (Bounding Boxes) относятся к изображению, которое сохраняется
+    как страница документа и показывается на экране — после поворота и выравнивания.
+    """
     engine = await resolve_engine()
 
-    if engine == "none":
-        return {
-            "number": number,
-            "png": png,
-            "width": width,
-            "height": height,
-            "text": "",
-            "boxes": [],
-            "confidence": 0.0,
-            "source": "needs_ocr",
-        }
-
-    if engine == "ollama-vision":
-        text = await vision_extract_text(png)
+    if engine in ("none", "ollama-vision"):
+        text = await vision_extract_text(png) if engine == "ollama-vision" else None
         if text:
             return {
-                "number": number,
-                "png": png,
-                "width": width,
-                "height": height,
+                "number": number, "png": png, "width": width, "height": height,
                 "text": text,
                 "boxes": [],  # VLM не возвращает координаты слов
                 "confidence": 0.0,
                 "source": "ollama-vision",
             }
         return {
-            "number": number,
-            "png": png,
-            "width": width,
-            "height": height,
-            "text": "",
-            "boxes": [],
-            "confidence": 0.0,
-            "source": "needs_ocr",
+            "number": number, "png": png, "width": width, "height": height,
+            "text": "", "boxes": [], "confidence": 0.0, "source": "needs_ocr",
         }
 
     def _run() -> dict:
         import io
 
+        import numpy as np
         from PIL import Image
 
-        import numpy as np
+        from app.ml_pipeline.ocr_engine import detect_orientation
+        from app.ml_pipeline.preprocessor import prepare_page
 
-        with Image.open(io.BytesIO(png)) as image:
-            array = np.array(image.convert("RGB"))
-        processed, meta = preprocess(array) if settings.PREPROCESS_ENABLED else (array, {})
-        buffer = io.BytesIO()
-        Image.fromarray(processed).save(buffer, format="PNG")
-        result = recognize_image(buffer.getvalue())
+        def to_png(array: np.ndarray) -> bytes:
+            buffer = io.BytesIO()
+            Image.fromarray(array).save(buffer, format="PNG")
+            return buffer.getvalue()
+
+        with Image.open(io.BytesIO(png)) as source:
+            rgb = source.convert("RGB")
+
+        orientation = 0
+        if settings.PREPROCESS_ENABLED:
+            orientation = detect_orientation(rgb)
+            if orientation:
+                # PIL поворачивает против часовой стрелки; OSD сообщает угол коррекции по часовой
+                rgb = rgb.rotate(-orientation, expand=True)
+        array = np.array(rgb)
+
+        if settings.PREPROCESS_ENABLED:
+            ocr_input, display, meta = prepare_page(array)
+        else:
+            ocr_input, display, meta = array, array, {}
+        meta["orientation"] = orientation
+
+        result = recognize_image(to_png(ocr_input))
+        display_height, display_width = display.shape[:2]
         return {
             "number": number,
-            "png": png,
-            "width": width,
-            "height": height,
-            "text": result.text or result.text,
+            "png": to_png(display),
+            "width": display_width,
+            "height": display_height,
+            "text": result.text,
             "boxes": words_to_boxes(result.words),
             "confidence": result.avg_confidence,
             "source": result.engine,
@@ -289,6 +304,7 @@ async def process_document(document_id: str) -> None:
             if document is None:
                 return
             filename = document.filename
+            # expire_on_commit=False: атрибуты остаются доступными после закрытия сессии
 
         await _set_status(document_id, DocumentStatus.OCR_PROCESSING, 10)
 
@@ -315,18 +331,27 @@ async def process_document(document_id: str) -> None:
                 await session.delete(chunk)
             await session.commit()
 
-        recognized_text = ""
+        # 2. Пост-OCR коррекция каждой страницы локальной LLM (с откатом на правила)
+        await _set_status(document_id, DocumentStatus.LLM_PROCESSING, 50)
+        corrected_pages: list[str] = []
+        correction_engines: set[str] = set()
         for page in pages:
             image_key = f"pages/{document_id}/page-{page['number']}.png"
             await storage.put(image_key, page["png"])
-            text = normalize_text(page["text"])
-            recognized_text += f"\n\n{text}"
+            raw = normalize_text(page["text"])
+            if raw:
+                corrected, engine_name = await correct_page_text(raw)
+                correction_engines.add(engine_name)
+            else:
+                corrected = ""
+            corrected_pages.append(corrected)
             async with SessionLocal() as session:
                 session.add(
                     OcrPage(
                         document_id=document_id,
                         page_number=page["number"],
-                        raw_text=text,
+                        raw_text=raw,
+                        corrected_text=corrected,
                         bounding_boxes=page["boxes"],
                         image_key=image_key,
                         image_width=page["width"],
@@ -337,7 +362,7 @@ async def process_document(document_id: str) -> None:
                 )
                 await session.commit()
 
-        recognized_text = recognized_text.strip()
+        recognized_text = "\n\n".join(text for text in corrected_pages if text).strip()
         if not recognized_text:
             raise ValueError(
                 "Текст не распознан. Для сканов нужен OCR-движок: Tesseract с языком rus "
@@ -346,7 +371,7 @@ async def process_document(document_id: str) -> None:
                 "PDF с текстовым слоем, DOCX и TXT обрабатываются без OCR."
             )
 
-        # 2. Локальный ИИ: коррекция, классификация, NER, резюме
+        # 3. Локальный ИИ: классификация, NER, резюме, строгий JSON
         await _set_status(document_id, DocumentStatus.LLM_PROCESSING, 65)
         outcome = await analyze_document(
             recognized_text, page_hint=f"Документ: {filename}, страниц: {len(pages)}"
@@ -368,18 +393,9 @@ async def process_document(document_id: str) -> None:
             extracted.entities = result.entities.model_dump()
             extracted.keywords = result.keywords
             extracted.engine = outcome.engine
-
-            # сохраняем исправленный текст постранично
-            if result.corrected_text:
-                page_rows = await session.execute(
-                    select(OcrPage).where(OcrPage.document_id == document_id).order_by(OcrPage.page_number)
-                )
-                rows = list(page_rows.scalars())
-                for row in rows:
-                    row.corrected_text = normalize_text(row.raw_text)
             await session.commit()
 
-        # 3. Индексация: чанки + эмбеддинги
+        # 4. Индексация: чанки + эмбеддинги (pgvector в PostgreSQL)
         await _set_status(document_id, DocumentStatus.LLM_PROCESSING, 85)
         async with SessionLocal() as session:
             page_rows = await session.execute(
@@ -396,18 +412,28 @@ async def process_document(document_id: str) -> None:
 
         vectors, embed_engine = await embed_texts([chunk for _, _, chunk in pairs])
         async with SessionLocal() as session:
-            for (page_number, index, chunk), vector in zip(pairs, vectors, strict=False):
+            vector_rows: list[tuple[str, list[float]]] = []
+            for (page_number, index, chunk), vector in zip(pairs, vectors, strict=True):
+                chunk_id = new_uuid()
                 session.add(
                     DocumentChunk(
+                        id=chunk_id,
                         document_id=document_id,
                         page_number=page_number,
                         chunk_index=index,
                         chunk_text=chunk,
                         embedding=vector,
+                        embedding_model=embed_engine,
                     )
                 )
+                vector_rows.append((chunk_id, vector))
             await session.commit()
-        logger.info("Документ %s проиндексирован (эмбеддинги: %s)", document_id, embed_engine)
+            await save_pg_vectors(session, vector_rows)
+            await session.commit()
+        logger.info(
+            "Документ %s: коррекция=%s, эмбеддинги=%s",
+            document_id, "/".join(sorted(correction_engines)), embed_engine,
+        )
 
         await _set_status(document_id, DocumentStatus.COMPLETED, 100)
     except Exception as exc:  # noqa: BLE001

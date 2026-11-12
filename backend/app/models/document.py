@@ -99,8 +99,11 @@ class DocumentChunk(Base):
     page_number: Mapped[int] = mapped_column(Integer, default=1)
     chunk_index: Mapped[int] = mapped_column(Integer, default=0)
     chunk_text: Mapped[str] = mapped_column(Text, default="")
-    # В PostgreSQL-контуре используется TSVECTOR + pgvector,
-    # в локальном (SQLite) — нормализованный текст и JSON-вектор.
+    # Вектор хранится в JSON (SQLite/fallback). В PostgreSQL дополнительно пишется
+    # колонка embedding_vec VECTOR(EMBEDDING_DIM) с HNSW-индексом (см. core/database.py).
     embedding: Mapped[list] = mapped_column(JSON, default=list)
+    # Каким движком получен вектор: ollama (bge-m3) или fallback (hashing).
+    # Сравниваем только векторы одного движка — иначе косинус между разными пространствами бессмыслен.
+    embedding_model: Mapped[str] = mapped_column(String(32), default="fallback")
 
     document: Mapped[Document] = relationship(back_populates="chunks")

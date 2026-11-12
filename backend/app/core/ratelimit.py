@@ -54,8 +54,11 @@ upload_limiter = SlidingWindowLimiter(settings.RATE_LIMIT_UPLOAD_PER_MINUTE, 60.
 
 
 def client_key(request: Request, suffix: str = "") -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    ip = request.client.host if request.client else "unknown"
+    if settings.TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            ip = forwarded.split(",")[0].strip() or ip
     return f"{ip}:{suffix}"
 
 

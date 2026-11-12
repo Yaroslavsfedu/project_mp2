@@ -21,7 +21,7 @@ samples: ## (пере)сгенерировать демо-документы и 
 	cd $(BACKEND) && PYTHONPATH=. $(PYTHON) -m scripts.generate_samples --out ../samples --force
 
 api: ## запустить backend (http://localhost:8000/api/docs)
-	cd $(BACKEND) && PYTHONPATH=. $(ACTIVATE) && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	cd $(BACKEND) && PYTHONPATH=. $(ACTIVATE) && uvicorn app.main:app --reload --no-proxy-headers --host 0.0.0.0 --port 8000
 
 web: ## запустить frontend (http://localhost:5173)
 	cd $(FRONTEND) && npm run dev -- --host

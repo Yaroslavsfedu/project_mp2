@@ -115,3 +115,40 @@ def preprocess(image: np.ndarray, *, remove_seals: bool = True, binarize: bool =
         return processed, meta
     meta["engine"] = "opencv"
     return gray, meta
+
+
+def deskew_with_angle(image: np.ndarray, angle: float) -> np.ndarray:
+    """Поворот на заданный угол (тот же угол применяется и к отображаемой странице, и к входу OCR)."""
+    if cv2 is None or angle == 0.0:
+        return image
+    h, w = image.shape[:2]
+    matrix = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+    return cv2.warpAffine(
+        image, matrix, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+    )
+
+
+def prepare_page(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Подготовка страницы: возвращает (вход для OCR, изображение для показа, метаданные).
+
+    Обе картинки имеют одинаковую геометрию, поэтому координаты слов из OCR
+    совпадают с тем, что пользователь видит на скане (подсветка Bounding Boxes).
+    На экран отдаётся цветная страница с печатями (их видно при проверке),
+    а OCR получает версию без синих/фиолетовых печатей и после бинаризации.
+    """
+    meta: dict = {"skew_angle": 0.0, "stamps_removed": False, "binarized": False}
+    if cv2 is None:
+        meta["engine"] = "opencv-not-installed"
+        return image, image, meta
+
+    cleaned = remove_stamps(image)
+    meta["stamps_removed"] = bool(np.any(cleaned != image))
+    gray = _to_gray(cleaned)
+    angle = detect_skew_angle(gray)
+    meta["skew_angle"] = round(angle, 2)
+
+    display = deskew_with_angle(image, angle)
+    ocr_input = denoise_and_binarize(deskew_with_angle(gray, angle))
+    meta["binarized"] = True
+    meta["engine"] = "opencv"
+    return ocr_input, display, meta

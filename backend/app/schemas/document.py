@@ -12,7 +12,6 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
     full_name: str = ""
-    role: Literal["admin", "operator", "viewer"] = "operator"
 
 
 class UserLogin(BaseModel):

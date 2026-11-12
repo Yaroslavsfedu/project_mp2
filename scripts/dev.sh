@@ -26,7 +26,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "==> Backend  http://localhost:$API_PORT/api/docs"
-(cd backend && PYTHONPATH=. "$PYTHON" -m uvicorn app.main:app --reload --host 0.0.0.0 --port "$API_PORT") &
+(cd backend && PYTHONPATH=. "$PYTHON" -m uvicorn app.main:app --reload --no-proxy-headers --host 0.0.0.0 --port "$API_PORT") &
 pids+=($!)
 
 if command -v npm >/dev/null 2>&1; then
