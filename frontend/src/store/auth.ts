@@ -8,6 +8,7 @@ import type { User } from "@/types";
  * сохраняет данные: тогда вход всё равно должен работать в текущей вкладке.
  */
 const TOKEN_KEY = "idp-token";
+export const SESSION_NOTICE_KEY = "idp-session-notice";
 
 export function readStoredToken(): string | null {
   try {
@@ -32,6 +33,18 @@ interface AuthState {
   setSession: (token: string, user: User) => void;
   setUser: (user: User) => void;
   logout: () => void;
+}
+
+/** Завершает сессию и сохраняет причину, чтобы показать её на странице входа. */
+export function endSession(reason?: string) {
+  if (reason) {
+    try {
+      sessionStorage.setItem(SESSION_NOTICE_KEY, reason);
+    } catch {
+      /* sessionStorage недоступен */
+    }
+  }
+  useAuth.getState().logout();
 }
 
 export const useAuth = create<AuthState>()(

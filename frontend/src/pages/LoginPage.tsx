@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowRight, FileScan, Lock, Mail, ShieldCheck, Sparkles, Zap } from "lucide-react";
 import { authApi } from "@/api/endpoints";
 import { apiError } from "@/api/client";
-import { useAuth } from "@/store/auth";
+import { SESSION_NOTICE_KEY, useAuth } from "@/store/auth";
 import { toast } from "@/store/toast";
 import { ErrorBanner, Spinner } from "@/components/ui";
 
@@ -23,7 +23,21 @@ export function LoginPage() {
   const [email, setEmail] = useState("demo@idp-project.ru");
   const [password, setPassword] = useState("demo12345");
   const [fullName, setFullName] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // Инициализатор без побочных эффектов: в StrictMode он вызывается дважды.
+  const [error, setError] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem(SESSION_NOTICE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem(SESSION_NOTICE_KEY);
+    } catch {
+      /* sessionStorage недоступен */
+    }
+  }, []);
 
   const submit = useMutation({
     mutationFn: async () =>

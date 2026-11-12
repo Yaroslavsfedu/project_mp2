@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import { apiError } from "@/api/client";
 import { authApi } from "@/api/endpoints";
-import { useAuth } from "@/store/auth";
+import { endSession, useAuth } from "@/store/auth";
 
 function isUnauthorized(error: unknown): boolean {
   return axios.isAxiosError(error) && error.response?.status === 401;
@@ -34,8 +34,8 @@ export function ProtectedRoute() {
   const unauthorized = me.isError && isUnauthorized(me.error);
 
   useEffect(() => {
-    if (unauthorized) useAuth.getState().logout();
-  }, [unauthorized]);
+    if (unauthorized) endSession(`Сервер отклонил сохранённую сессию (401): ${apiError(me.error)}. Войдите снова.`);
+  }, [unauthorized, me.error]);
 
   if (!token || unauthorized) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;

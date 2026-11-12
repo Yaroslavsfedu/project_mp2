@@ -1,5 +1,5 @@
 import axios from "axios";
-import { useAuth } from "@/store/auth";
+import { endSession, useAuth } from "@/store/auth";
 
 export const API_PREFIX = "/api/v1";
 
@@ -26,7 +26,7 @@ api.interceptors.response.use(
       const sentHeader = String(error.config?.headers?.Authorization ?? "");
       const current = useAuth.getState().token;
       if (!isAuthCall && current && sentHeader === `Bearer ${current}`) {
-        useAuth.getState().logout();
+        endSession(`Сервер отклонил сохранённую сессию (401): ${apiError(error)}. Войдите снова.`);
       }
     }
     return Promise.reject(error);
