@@ -1,0 +1,33 @@
+# ---- API / core ----
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-multipart==0.0.20
+PyJWT==2.10.1
+# bcrypt используется напрямую (passlib 1.7.4 несовместим с bcrypt>=4.1)
+bcrypt==4.2.1
+httpx==0.28.1
+
+# ---- Database ----
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+aiosqlite==0.20.0
+alembic==1.14.0
+
+# ---- Storage ----
+minio==7.2.12
+
+# ---- Background tasks ----
+celery==5.4.0
+redis==5.2.1
+
+# ---- Document processing / CV / OCR ----
+PyMuPDF==1.25.1
+Pillow==11.1.0
+numpy==2.2.1
+opencv-python-headless==4.10.0.84
+pytesseract==0.3.13
+python-docx==1.1.2
+openpyxl==3.1.5
+email-validator==2.2.0
