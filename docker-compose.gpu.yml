@@ -1,0 +1,57 @@
+# GPU-профиль: Ollama с CUDA и отдельная VLM для OCR сканов.
+#
+# Запуск (нужны драйвер NVIDIA + nvidia-container-toolkit):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Подбор модели под VRAM:
+#   6–8 ГБ   — qwen2.5:7b-instruct (Q4) или qwen2.5:3b-instruct
+#   10–12 ГБ — qwen2.5:14b-instruct (Q4)
+#   20–24 ГБ — qwen2.5:14b-instruct + bge-m3 + qwen2-vl:7b одновременно
+#   32 ГБ+   — qwen2.5:32b-instruct (Q4) + bge-m3 + qwen2-vl:7b
+services:
+  ollama:
+    image: ollama/ollama:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      # Держим одну модель в памяти и не выгружаем её между запросами
+      OLLAMA_KEEP_ALIVE: "30m"
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      # 0 — Ollama сам подберёт число слоёв под доступную VRAM
+      OLLAMA_GPU_OVERHEAD: "0"
+    volumes:
+      - ollamadata:/root/.ollama
+
+  ollama-models:
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen2-vl:7b}
+      PULL_VISION: ${PULL_VISION:-1}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        ollama pull "$$OLLAMA_MODEL" &&
+        ollama pull "$$EMBEDDING_MODEL" &&
+        if [ "$$PULL_VISION" = "1" ]; then ollama pull "$$VISION_MODEL"; fi
+
+  backend:
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen2-vl:7b}
+      OCR_ENGINE: ${OCR_ENGINE:-auto}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-300}
+
+  celery_worker:
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen2-vl:7b}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-300}

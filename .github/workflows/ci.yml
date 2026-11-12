@@ -27,6 +27,16 @@ jobs:
         env:
           PYTHONPATH: .
         run: pytest -q
+      - name: Демо-данные и эталонная разметка
+        env:
+          PYTHONPATH: .
+        run: python -m scripts.generate_samples --out ../samples --force
+      - name: Метрики качества (CER/WER/F1)
+        env:
+          PYTHONPATH: .
+        run: python -m scripts.evaluate --quiet
+      - name: Проверка окружения
+        run: python ../scripts/check_env.py --json > /dev/null
 
   frontend:
     name: Frontend (типы + сборка)

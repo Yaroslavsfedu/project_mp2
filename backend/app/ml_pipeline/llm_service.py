@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -86,7 +87,11 @@ RE_DOC_NUMBER = re.compile(
 )
 RE_ADDRESS = re.compile(
     r"\b(?:г\.|город|гор\.)\s*[А-ЯЁ][А-Яа-яё]*(?:-[А-Яа-яёЁ][А-Яа-яёЁ]*)*,"
-    r"\s*(?:ул\.|улица|пр\.|пр-т|просп\.|пер\.|переулок|д\.|шоссе|бульвар|наб\.)[^\n;]{0,90}"
+    r"\s*(?:ул\.|улица|пр\.|пр-т|просп\.|пер\.|переулок|шоссе|бульвар|наб\.)"
+    r"[^\n;|]{0,70}?\b\d[\w/\-]*"
+    # допустимые продолжения адреса: офис, корпус, аудитория и т.п.
+    r"(?:[,\s]+(?:офис|оф\.|кв\.|корпус|ауд\.|строение|стр\.|помещение|пом\.)\s*"
+    r"[«\"]?[\wА-Яа-яё\-]{1,12}[»\"]?)*"
 )
 # город без улицы принимаем только в «шапке» документа (первая строка адресного блока)
 RE_CITY_ONLY = re.compile(r"\b(?:г\.|город|гор\.)\s*[А-ЯЁ][А-Яа-яё]*(?:-[А-Яа-яёЁ][А-Яа-яёЁ]*)*\b")
@@ -204,7 +209,37 @@ def classify(text: str) -> str:
 
 
 ORG_PREFIXES = ("ООО", "ОАО", "ЗАО", "ПАО", "АО", "ИП", "ФГБОУ", "ФГУП", "ГБУ", "МУП", "АНО", "НИИ", "НПО")
-CITY_STOPWORDS = {"поставщик", "покупатель", "заказчик", "исполнитель", "продавец", "оплата", "сдал", "принял", "о"}
+CITY_STOPWORDS = {
+    "поставщик",
+    "покупатель",
+    "заказчик",
+    "исполнитель",
+    "продавец",
+    "оплата",
+    "сдал",
+    "принял",
+    "о",
+    # типовые ложные срабатывания «г. Общество», «г. Федерация»
+    "общество",
+    "ответственностью",
+    "ограниченной",
+    "акционерное",
+    "унитарное",
+    "федерация",
+    "российская",
+    "россия",
+    "университет",
+    "институт",
+    "лаборатория",
+    "кафедра",
+    "отдел",
+    "служба",
+    "счёт",
+    "счет",
+    "договор",
+    "акт",
+    "приказ",
+}
 
 
 def _clean_city_candidates(candidates: list[str]) -> list[str]:
@@ -235,7 +270,19 @@ def extract_entities(text: str) -> ExtractedEntities:
 
     # адрес без улицы берём только из шапки (первые 400 символов)
     head_addresses = _clean_city_candidates(RE_CITY_ONLY.findall(text[:400]))
-    addresses = _uniq(RE_ADDRESS.findall(text) + head_addresses, limit=6)
+    street_addresses = [
+        re.sub(r"\s+", " ", value).strip(" .,;") for value in RE_ADDRESS.findall(text)
+    ]
+    # длинные адреса важнее коротких «г. Ростов-на-Дону» из шапки
+    addresses = _uniq(street_addresses + head_addresses, limit=8)
+    addresses = [
+        value
+        for value in addresses
+        if not any(
+            other != value and value.lower() in other.lower() and len(other) > len(value)
+            for other in addresses
+        )
+    ][:6]
 
     # Отбрасываем «ФИО» из служебных шапок
     persons = [p for p in persons if p.lower() not in {"российская федерация", "ростов на"}]
@@ -311,6 +358,30 @@ class OllamaClient:
         except Exception:  # noqa: BLE001
             self._available = False
         return self._available
+
+    async def list_models(self) -> list[str]:
+        """Список локально установленных моделей (GET /api/tags)."""
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.get(f"{self.base_url}/api/tags")
+                response.raise_for_status()
+                return [item.get("name", "") for item in response.json().get("models", [])]
+        except Exception:  # noqa: BLE001
+            return []
+
+    @staticmethod
+    def _model_present(model: str, installed: list[str]) -> bool:
+        model_base = model.split(":")[0]
+        for name in installed:
+            name_base = name.split(":")[0]
+            if name == model or name_base == model_base:
+                return True
+        return False
+
+    async def has_model(self, model: str) -> bool:
+        if not await self.is_available():
+            return False
+        return self._model_present(model, await self.list_models())
 
     async def generate_json(self, prompt: str, system: str = SYSTEM_PROMPT) -> dict | None:
         payload = {
@@ -440,13 +511,61 @@ async def answer_question(question: str, context_chunks: list[str]) -> tuple[str
     )
 
 
+VISION_OCR_PROMPT = (
+    "Ты — OCR-модуль. Извлеки весь текст со скана документа на изображении. "
+    "Сохрани порядок строк и абзацев, переносы строк, таблицы (ячейки через |). "
+    "Не добавляй пояснений, заголовков и markdown. Верни только распознанный текст."
+)
+
+
+async def vision_extract_text(png_bytes: bytes) -> str | None:
+    """OCR через локальную VLM (qwen2-vl / llava) — для сканов и рукописного текста.
+
+    Используется, когда Tesseract недоступен, а GPU позволяет держать视觉-модель.
+    Координаты слов VLM не возвращает, поэтому на фронтенде страница будет
+    доступна без Bounding Boxes (текст и сущности работают как обычно).
+    """
+    if not await ollama.is_available():
+        return None
+    payload = {
+        "model": settings.OLLAMA_VISION_MODEL,
+        "prompt": VISION_OCR_PROMPT,
+        "images": [base64.b64encode(png_bytes).decode("ascii")],
+        "stream": False,
+        "options": {"temperature": 0.0},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
+            response = await client.post(f"{ollama.base_url}/api/generate", json=payload)
+            response.raise_for_status()
+            text = (response.json().get("response") or "").strip()
+            return text or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("VLM OCR недоступен (%s): %s", settings.OLLAMA_VISION_MODEL, exc)
+        return None
+
+
+async def vision_available() -> bool:
+    return await ollama.has_model(settings.OLLAMA_VISION_MODEL)
+
+
 async def llm_status() -> dict:
     available = await ollama.is_available()
+    installed = await ollama.list_models() if available else []
     return {
         "provider": "ollama",
         "url": ollama.base_url,
         "model": ollama.model,
         "embedding_model": settings.EMBEDDING_MODEL,
+        "vision_model": settings.OLLAMA_VISION_MODEL,
         "available": available,
         "mode": "ollama" if available else "fallback",
+        "installed_models": installed,
+        "model_installed": ollama._model_present(ollama.model, installed) if available else False,
+        "embedding_model_installed": (
+            ollama._model_present(settings.EMBEDDING_MODEL, installed) if available else False
+        ),
+        "vision_model_installed": (
+            ollama._model_present(settings.OLLAMA_VISION_MODEL, installed) if available else False
+        ),
     }

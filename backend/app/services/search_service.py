@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ml_pipeline.llm_service import embed_texts
@@ -44,6 +44,83 @@ def _apply_filters(query, filters: SearchFilters):
     return query.where(and_(*clauses)) if clauses else query
 
 
+def _dialect(db: AsyncSession) -> str:
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    return getattr(getattr(bind, "dialect", None), "name", "sqlite")
+
+
+async def _postgres_fulltext_hits(
+    db: AsyncSession, query: str, filters: SearchFilters, limit: int
+) -> list[SearchHit]:
+    """Полнотекстовый поиск средствами PostgreSQL: to_tsvector + ts_rank + ts_headline.
+
+    Используется русская морфология ('russian'), поэтому запрос «неустойка»
+    находит «неустойки», «неустойку» и т.д. Индекс GIN создаётся миграцией.
+    """
+    clauses = [
+        "to_tsvector('russian', coalesce(p.corrected_text, '') || ' ' || coalesce(p.raw_text, '')) "
+        "@@ plainto_tsquery('russian', :q)"
+    ]
+    params: dict = {"q": query, "limit": limit}
+    if filters.doc_type:
+        clauses.append("d.doc_type = :doc_type")
+        params["doc_type"] = filters.doc_type
+    if filters.status:
+        clauses.append("d.status = :status")
+        params["status"] = filters.status
+    if filters.date_from:
+        clauses.append("d.created_at >= :date_from")
+        params["date_from"] = filters.date_from
+    if filters.date_to:
+        clauses.append("d.created_at <= :date_to")
+        params["date_to"] = filters.date_to
+    if filters.organization:
+        clauses.append(
+            "(coalesce(p.corrected_text, '') || ' ' || coalesce(p.raw_text, '')) ILIKE :organization"
+        )
+        params["organization"] = f"%{filters.organization}%"
+
+    sql = f"""
+        SELECT p.document_id,
+               d.filename,
+               d.doc_type,
+               d.status,
+               p.page_number,
+               ts_rank(
+                   to_tsvector('russian', coalesce(p.corrected_text, '') || ' ' || coalesce(p.raw_text, '')),
+                   plainto_tsquery('russian', :q)
+               ) AS rank,
+               ts_headline(
+                   'russian',
+                   coalesce(p.corrected_text, p.raw_text),
+                   plainto_tsquery('russian', :q),
+                   'StartSel=<b>, StopSel=</b>, MaxWords=45, MinWords=12'
+               ) AS headline
+        FROM ocr_pages p
+        JOIN documents d ON d.id = p.document_id
+        WHERE {' AND '.join(clauses)}
+        ORDER BY rank DESC, d.created_at DESC
+        LIMIT :limit
+    """
+    rows = (await db.execute(sql_text(sql), params)).mappings().all()
+    hits: list[SearchHit] = []
+    for row in rows:
+        headline = (row["headline"] or "").replace("<b>", "").replace("</b>", "")
+        hits.append(
+            SearchHit(
+                document_id=row["document_id"],
+                filename=row["filename"],
+                doc_type=row["doc_type"],
+                status=row["status"],
+                page_number=row["page_number"],
+                snippet=headline.strip() or "…",
+                score=round(min(float(row["rank"] or 0) * 4, 1.0), 4),
+                match_type="postgres-fts",
+            )
+        )
+    return hits
+
+
 async def search_documents(db: AsyncSession, query: str, filters: SearchFilters, mode: str, limit: int) -> SearchResponse:
     started = time.perf_counter()
     terms = expand_query(query)
@@ -53,7 +130,14 @@ async def search_documents(db: AsyncSession, query: str, filters: SearchFilters,
     hits: list[SearchHit] = []
 
     # ---------- полнотекстовая часть ----------
-    if mode in ("fulltext", "hybrid") and stems:
+    dialect = _dialect(db)
+    if mode in ("fulltext", "hybrid") and dialect == "postgresql":
+        try:
+            hits.extend(await _postgres_fulltext_hits(db, query, filters, limit * 3))
+        except Exception:  # noqa: BLE001 - деградируем к LIKE-поиску
+            dialect = "fallback"
+
+    if mode in ("fulltext", "hybrid") and stems and dialect != "postgresql":
         conditions = [
             OcrPage.raw_text.ilike(f"%{stem}%") | OcrPage.corrected_text.ilike(f"%{stem}%")
             for stem in stems

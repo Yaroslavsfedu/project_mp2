@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, inspect as sa_inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.ratelimit import limit_upload
 from app.core.security import get_current_user
 from app.ml_pipeline.llm_service import answer_question, embed_texts
 from app.ml_pipeline.text_utils import cosine
@@ -31,6 +32,7 @@ from app.schemas.document import (
     VerifyPayload,
 )
 from app.services import pipeline_service
+from app.services.audit_service import log_action
 from app.services.storage_service import safe_filename, storage
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -108,9 +110,11 @@ async def get_document_or_404(db: AsyncSession, document_id: str) -> Document:
 # --------------------------------- upload ---------------------------------
 @router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_documents(
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     files: Annotated[list[UploadFile], File(description="Один или несколько документов")],
+    _: Annotated[None, Depends(limit_upload)] = None,
 ):
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Файлы не переданы")
@@ -137,6 +141,14 @@ async def upload_documents(
         )
         db.add(document)
         created.append(document)
+        await log_action(
+            db,
+            action="document_uploaded",
+            user=user,
+            document=document,
+            details={"size": len(data), "mime": document.mime_type},
+            ip_address=request.client.host if request.client else None,
+        )
 
     await db.commit()
     for document in created:
@@ -267,6 +279,7 @@ async def get_original_file(
 async def verify_document(
     document_id: str,
     payload: VerifyPayload,
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -300,6 +313,17 @@ async def verify_document(
     if payload.is_verified:
         document.status = DocumentStatus.VERIFIED
 
+    await log_action(
+        db,
+        action="document_verified" if payload.is_verified else "document_edited",
+        user=user,
+        document=document,
+        details={
+            "doc_type": document.doc_type,
+            "entities_total": sum(len(v) for v in (extracted.entities or {}).values() if isinstance(v, list)),
+        },
+        ip_address=request.client.host if request.client else None,
+    )
     await db.commit()
     await pipeline_service.publish_status(document, document.status, document.progress, "Документ проверен оператором")
     return await get_document(document_id, user, db)
@@ -308,6 +332,7 @@ async def verify_document(
 @router.post("/{document_id}/reprocess", response_model=DocumentOut)
 async def reprocess_document(
     document_id: str,
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -319,6 +344,14 @@ async def reprocess_document(
         # после повторной обработки результат требует новой проверки оператором
         document.extracted.is_verified = False
         document.extracted.verified_at = None
+
+    await log_action(
+        db,
+        action="document_reprocessed",
+        user=user,
+        document=document,
+        ip_address=request.client.host if request.client else None,
+    )
     await db.commit()
     pipeline_service.enqueue(document.id)
     return to_out(document)
@@ -327,12 +360,20 @@ async def reprocess_document(
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
     document_id: str,
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     document = await get_document_or_404(db, document_id)
     if user.role != UserRole.ADMIN and document.user_id != user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Удалять чужие документы может только администратор")
+    await log_action(
+        db,
+        action="document_deleted",
+        user=user,
+        document=document,
+        ip_address=request.client.host if request.client else None,
+    )
     await storage.delete_prefix(f"originals/{document_id}")
     await storage.delete_prefix(f"pages/{document_id}")
     await db.delete(document)

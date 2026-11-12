@@ -20,8 +20,12 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.ml_pipeline import pdf_handler, renderer
-from app.ml_pipeline.llm_service import analyze_document, embed_texts
-from app.ml_pipeline.ocr_engine import available_engine, recognize_image, words_to_boxes
+from app.ml_pipeline.llm_service import analyze_document, embed_texts, vision_extract_text
+from app.ml_pipeline.ocr_engine import (
+    recognize_image,
+    resolve_engine,
+    words_to_boxes,
+)
 from app.ml_pipeline.preprocessor import preprocess
 from app.ml_pipeline.text_utils import chunk_text, normalize_text
 from app.models.document import Document, DocumentChunk, DocumentStatus, ExtractedData, OcrPage
@@ -190,7 +194,34 @@ def _to_png(image) -> bytes:
 
 
 async def _ocr_page(number: int, png: bytes, width: int, height: int) -> dict:
-    if available_engine() == "none":
+    """Распознаёт страницу выбранным движком (Tesseract или локальная VLM)."""
+    engine = await resolve_engine()
+
+    if engine == "none":
+        return {
+            "number": number,
+            "png": png,
+            "width": width,
+            "height": height,
+            "text": "",
+            "boxes": [],
+            "confidence": 0.0,
+            "source": "needs_ocr",
+        }
+
+    if engine == "ollama-vision":
+        text = await vision_extract_text(png)
+        if text:
+            return {
+                "number": number,
+                "png": png,
+                "width": width,
+                "height": height,
+                "text": text,
+                "boxes": [],  # VLM не возвращает координаты слов
+                "confidence": 0.0,
+                "source": "ollama-vision",
+            }
         return {
             "number": number,
             "png": png,
@@ -220,7 +251,7 @@ async def _ocr_page(number: int, png: bytes, width: int, height: int) -> dict:
             "png": png,
             "width": width,
             "height": height,
-            "text": result.text,
+            "text": result.text or result.text,
             "boxes": words_to_boxes(result.words),
             "confidence": result.avg_confidence,
             "source": result.engine,
@@ -228,6 +259,8 @@ async def _ocr_page(number: int, png: bytes, width: int, height: int) -> dict:
         }
 
     page = await asyncio.to_thread(_run)
+    if not page["text"] and page["boxes"]:
+        page["text"] = " ".join(box["text"] for box in page["boxes"])
     page["boxes"] = _line_boxes_from_words(
         [{"text": box["text"], "bbox": box["bbox"], "confidence": box["confidence"]} for box in page["boxes"]]
     )
@@ -307,8 +340,10 @@ async def process_document(document_id: str) -> None:
         recognized_text = recognized_text.strip()
         if not recognized_text:
             raise ValueError(
-                "Текст не распознан: для сканов требуется OCR-движок (Tesseract с языком rus) "
-                "или загрузите PDF с текстовым слоем / DOCX."
+                "Текст не распознан. Для сканов нужен OCR-движок: Tesseract с языком rus "
+                "(ставится в Docker-образе) либо локальная VLM в Ollama "
+                f"(OCR_ENGINE=ollama, модель {settings.OLLAMA_VISION_MODEL}). "
+                "PDF с текстовым слоем, DOCX и TXT обрабатываются без OCR."
             )
 
         # 2. Локальный ИИ: коррекция, классификация, NER, резюме
