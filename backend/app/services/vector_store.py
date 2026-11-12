@@ -387,7 +387,8 @@ async def top_chunks_mmap(
         return []
     filtered = any([document_id, doc_type, status, date_from, date_to, organization])
     want = limit * (10 if filtered else 1)
-    candidates = index.search(query, want, settings.VECTOR_INDEX_RERANK_FACTOR, nprobe=settings.IVF_NPROBE)
+    candidates = index.search(query, want, settings.VECTOR_INDEX_RERANK_FACTOR, nprobe=settings.IVF_NPROBE,
+                              early_words=settings.VECTOR_EARLY_WORDS, early_z=settings.VECTOR_EARLY_Z)
     if not candidates:
         return []
     score_by_id = {c.chunk_id: c.score for c in candidates}

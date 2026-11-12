@@ -160,3 +160,75 @@ def test_quantize_batch_equals_rows():
     batch = K.quantize_unit_i8_batch(vecs)
     rows = np.stack([K.quantize_unit_i8(v) for v in vecs])
     assert np.array_equal(batch, rows)
+
+
+# ---------- ранний выход (cascade) и подсказки ядру ----------
+
+def _clustered_sigs(n: int, words: int, seed: int):
+    rng = np.random.default_rng(seed)
+    centers = rng.integers(0, 2**63, size=(40, words), dtype=np.uint64)
+    pick = rng.integers(0, 40, size=n)
+    sigs = centers[pick].copy()
+    flips = rng.random((n, words * 64)) < 0.18  # шум: 18 % битов
+    bits = np.unpackbits(sigs.view(np.uint8), axis=1, bitorder="little")
+    bits ^= flips.astype(np.uint8)
+    return np.packbits(bits, axis=1, bitorder="little").view(np.uint64).reshape(n, words)
+
+
+@NATIVE_ONLY
+def test_early_exit_with_huge_z_is_exact():
+    sigs = _clustered_sigs(20000, 16, seed=1)
+    q = sigs[123].copy()
+    exact_i, exact_d = K.topk_hamming(sigs, q, 50)
+    ee_i, ee_d = K.topk_hamming(sigs, q, 50, early_words=4, z=1e9)  # отсев выключен
+    assert np.array_equal(exact_i, ee_i) and np.array_equal(exact_d, ee_d)
+
+
+@NATIVE_ONLY
+def test_early_exit_keeps_most_of_top_k():
+    sigs = _clustered_sigs(50000, 16, seed=2)
+    overlap = []
+    for qi in (5, 900, 4321, 33000):
+        q = sigs[qi].copy()
+        exact_i, _ = K.topk_hamming(sigs, q, 100)
+        ee_i, _ = K.topk_hamming(sigs, q, 100, early_words=4, z=2.0)
+        overlap.append(len(set(exact_i.tolist()) & set(ee_i.tolist())) / 100)
+    assert float(np.mean(overlap)) >= 0.9, overlap
+
+
+@NATIVE_ONLY
+def test_early_exit_result_is_sorted_and_distances_true():
+    sigs = _clustered_sigs(8000, 16, seed=3)
+    q = sigs[77].copy()
+    idx, dist = K.topk_hamming(sigs, q, 30, early_words=4, z=2.0)
+    assert np.all(np.diff(dist) >= 0)
+    true = np.array([int(np.unpackbits((sigs[i] ^ q).view(np.uint8)).sum()) for i in idx])
+    assert np.array_equal(true, dist)
+
+
+def test_willneed_hint_is_harmless():
+    import tempfile
+    from pathlib import Path
+
+    from app.services.mmap_index import _advise_willneed
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.bin"
+        np.arange(4096, dtype=np.uint64).tofile(path)
+        mm = np.memmap(path, dtype=np.uint64, mode="r", shape=(4096,))
+        _advise_willneed(mm, 0, 8 * 100)
+        _advise_willneed(mm, 10_000_000, 10_000_100)  # за пределами файла — молча
+        _advise_willneed(np.zeros(4), 0, 8)  # без _mmap — молча
+    assert True
+
+
+@NATIVE_ONLY
+def test_multi_range_topk_equals_exact_over_union():
+    sigs = _clustered_sigs(30000, 16, seed=4)
+    q = sigs[4242].copy()
+    ranges = [(0, 4000), (10000, 12500), (25000, 30000)]
+    got_i, got_d = K.topk_hamming_ranges(sigs, q, ranges, 60)
+    union = np.concatenate([np.arange(lo, hi) for lo, hi in ranges])
+    dist = np.array([int(np.unpackbits((sigs[i] ^ q).view(np.uint8)).sum()) for i in union])
+    order = np.lexsort((union, dist))[:60]
+    assert np.array_equal(got_i, union[order]) and np.array_equal(got_d, dist[order])

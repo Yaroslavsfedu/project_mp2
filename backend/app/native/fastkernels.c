@@ -158,6 +158,112 @@ FK_EXPORT int64_t fk_topk_hamming(const uint64_t *sigs, int64_t n, int64_t words
     return size;
 }
 
+/* Top-k с ранним выходом (cascade / Matryoshka-подобный). Строки сканируются по одной:
+ * сначала считаются первые early_words слов сигнатуры. Если порог кучи T уже известен (куча полна),
+ * ожидаемое частичное расстояние кандидата при расстоянии T равно early_bits·T/bits. Если частичное
+ * расстояние превышает это ожидание на z стандартных отклонений биномиального распределения, полное
+ * расстояние почти наверняка не попадёт в top-k, и остальные слова не читаются.
+ * Это СТАТИСТИЧЕСКИЙ отсев: изредка теряется кандидат, который был бы в top-k (контролируется z и замером recall).
+ * Точное поведение — fk_topk_hamming (early_words = 0). Соседние строки предвыбираются (__builtin_prefetch). */
+FK_EXPORT int64_t fk_topk_hamming_ee(const uint64_t *sigs, int64_t n, int64_t words, const uint64_t *q,
+                                     int64_t k, int64_t early_words, double z,
+                                     int64_t *out_idx, int32_t *out_dist) {
+    if (k <= 0 || n <= 0) return 0;
+    if (early_words <= 0 || early_words >= words) early_words = 0;
+    int64_t bits = words * 64;
+    int64_t early_bits = early_words * 64;
+    int32_t *hd = (int32_t *)malloc((size_t)k * sizeof(int32_t));
+    int64_t *hi = (int64_t *)malloc((size_t)k * sizeof(int64_t));
+    if (!hd || !hi) { free(hd); free(hi); return -1; }
+    int64_t size = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (i + 8 < n) __builtin_prefetch(sigs + (i + 8) * words, 0, 1);
+        const uint64_t *row = sigs + i * words;
+        if (early_words && size == k) {
+            double T = (double)hd[0];
+            double p = T / (double)bits;
+            double lim = (double)early_bits * p + z * sqrt((double)early_bits * p * (1.0 - p));
+            int32_t part = 0;
+            for (int64_t w = 0; w < early_words; w++) part += __builtin_popcountll(row[w] ^ q[w]);
+            if ((double)part > lim) continue;
+        }
+        int32_t d = hamming_words(row, q, words);
+        if (size < k) {
+            hd[size] = d; hi[size] = i; size++;
+            if (size == k) {
+                for (int64_t pos = size / 2 - 1; pos >= 0; pos--) heap_sift_down(hd, hi, size, pos);
+            }
+        } else if (d < hd[0] || (d == hd[0] && i < hi[0])) {
+            hd[0] = d; hi[0] = i;
+            heap_sift_down(hd, hi, size, 0);
+        }
+    }
+    for (int64_t end = size - 1; end > 0; end--) {
+        int32_t td = hd[0]; hd[0] = hd[end]; hd[end] = td;
+        int64_t ti = hi[0]; hi[0] = hi[end]; hi[end] = ti;
+        heap_sift_down(hd, hi, end, 0);
+    }
+    for (int64_t i = 0; i < size; i++) {
+        out_idx[i] = hi[i];
+        out_dist[i] = hd[i];
+    }
+    free(hd); free(hi);
+    return size;
+}
+
+/* Top-k по нескольким диапазонам строк за один проход и с ОДНОЙ кучей (IVF: выбранные кластеры).
+ * ranges — пары [lo, hi) в строках, nr — их число. Общая куча означает общий порог: он быстро ужесточается,
+ * и ранний выход (early_words, z — см. fk_topk_hamming_ee) отсеивает больше. Индексы — абсолютные строки. */
+FK_EXPORT int64_t fk_topk_hamming_ranges(const uint64_t *sigs, int64_t words, const uint64_t *q,
+                                         const int64_t *ranges, int64_t nr, int64_t k,
+                                         int64_t early_words, double z,
+                                         int64_t *out_idx, int32_t *out_dist) {
+    if (k <= 0 || nr <= 0) return 0;
+    if (early_words <= 0 || early_words >= words) early_words = 0;
+    int64_t bits = words * 64;
+    int64_t early_bits = early_words * 64;
+    int32_t *hd = (int32_t *)malloc((size_t)k * sizeof(int32_t));
+    int64_t *hi = (int64_t *)malloc((size_t)k * sizeof(int64_t));
+    if (!hd || !hi) { free(hd); free(hi); return -1; }
+    int64_t size = 0;
+    for (int64_t r = 0; r < nr; r++) {
+        int64_t lo = ranges[2 * r], hi_row = ranges[2 * r + 1];
+        for (int64_t i = lo; i < hi_row; i++) {
+            if (i + 8 < hi_row) __builtin_prefetch(sigs + (i + 8) * words, 0, 1);
+            const uint64_t *row = sigs + i * words;
+            if (early_words && size == k) {
+                double T = (double)hd[0];
+                double p = T / (double)bits;
+                double lim = (double)early_bits * p + z * sqrt((double)early_bits * p * (1.0 - p));
+                int32_t part = 0;
+                for (int64_t w = 0; w < early_words; w++) part += __builtin_popcountll(row[w] ^ q[w]);
+                if ((double)part > lim) continue;
+            }
+            int32_t d = hamming_words(row, q, words);
+            if (size < k) {
+                hd[size] = d; hi[size] = i; size++;
+                if (size == k) {
+                    for (int64_t pos = size / 2 - 1; pos >= 0; pos--) heap_sift_down(hd, hi, size, pos);
+                }
+            } else if (d < hd[0] || (d == hd[0] && i < hi[0])) {
+                hd[0] = d; hi[0] = i;
+                heap_sift_down(hd, hi, size, 0);
+            }
+        }
+    }
+    for (int64_t end = size - 1; end > 0; end--) {
+        int32_t td = hd[0]; hd[0] = hd[end]; hd[end] = td;
+        int64_t ti = hi[0]; hi[0] = hi[end]; hi[end] = ti;
+        heap_sift_down(hd, hi, end, 0);
+    }
+    for (int64_t i = 0; i < size; i++) {
+        out_idx[i] = hi[i];
+        out_dist[i] = hd[i];
+    }
+    free(hd); free(hi);
+    return size;
+}
+
 /* ------------------------------------------------------------------ */
 /* 2. int8 SQ8: квантование единичного вектора и скалярное произведение   */
 /* ------------------------------------------------------------------ */

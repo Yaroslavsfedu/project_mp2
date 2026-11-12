@@ -76,6 +76,10 @@ def _bind(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.fk_hamming_scan.argtypes = [P, i64, i64, P, P]
     lib.fk_topk_hamming.argtypes = [P, i64, i64, P, i64, P, P]
     lib.fk_topk_hamming.restype = i64
+    lib.fk_topk_hamming_ee.argtypes = [P, i64, i64, P, i64, i64, ctypes.c_double, P, P]
+    lib.fk_topk_hamming_ee.restype = i64
+    lib.fk_topk_hamming_ranges.argtypes = [P, i64, P, P, i64, i64, i64, ctypes.c_double, P, P]
+    lib.fk_topk_hamming_ranges.restype = i64
     lib.fk_quantize_unit_i8.argtypes = [P, i64, P]
     lib.fk_quantize_unit_i8_batch.argtypes = [P, i64, i64, P]
     lib.fk_dot_i8.argtypes = [P, P, i64]
@@ -234,8 +238,13 @@ class FastKernels:
             out = np.packbits(bools, axis=1, bitorder="little").view("<u8").astype(np.uint64)
         return out[0] if single else out
 
-    def topk_hamming(self, sigs: np.ndarray, query_sig: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
-        """Top-k по расстоянию Хэмминга. sigs — (n, words) uint64, может быть memmap (без копий)."""
+    def topk_hamming(self, sigs: np.ndarray, query_sig: np.ndarray, k: int, *,
+                     early_words: int = 0, z: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
+        """Top-k по расстоянию Хэмминга. sigs — (n, words) uint64, может быть memmap (без копий).
+
+        early_words > 0 (только нативно): ранний выход по первым early_words словам (статистический отсев,
+        см. fk_topk_hamming_ee); z — ширина отсева в стандартных отклонениях. По умолчанию — точный скан.
+        """
         n, words = sigs.shape
         k = min(k, n)
         if k <= 0:
@@ -244,7 +253,11 @@ class FastKernels:
         if self._lib is not None:
             idx = np.zeros(k, dtype=np.int64)
             dist = np.zeros(k, dtype=np.int32)
-            got = self._lib.fk_topk_hamming(_ptr(sigs), n, words, _ptr(q), k, _ptr(idx), _ptr(dist))
+            if early_words > 0 and early_words < words:
+                got = self._lib.fk_topk_hamming_ee(_ptr(sigs), n, words, _ptr(q), k, early_words, float(z),
+                                                   _ptr(idx), _ptr(dist))
+            else:
+                got = self._lib.fk_topk_hamming(_ptr(sigs), n, words, _ptr(q), k, _ptr(idx), _ptr(dist))
             if got < 0:
                 raise MemoryError("fk_topk_hamming: нехватка памяти")
             return idx[:got], dist[:got]
@@ -260,6 +273,35 @@ class FastKernels:
             order = np.lexsort((cand_i, cand_d))[:k]
             best_d, best_i = cand_d[order], cand_i[order]
         return best_i, best_d
+
+    def topk_hamming_ranges(self, sigs: np.ndarray, query_sig: np.ndarray, ranges: list[tuple[int, int]], k: int,
+                            *, early_words: int = 0, z: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
+        """Top-k по объединению диапазонов строк одной кучей (нативно); NumPy — то же через topk_hamming."""
+        n, words = sigs.shape
+        q = np.ascontiguousarray(query_sig, dtype=np.uint64)
+        rng = [(int(lo), int(hi)) for lo, hi in ranges if hi > lo]
+        if k <= 0 or not rng:
+            return np.zeros(0, np.int64), np.zeros(0, np.int32)
+        if self._lib is not None:
+            flat = np.ascontiguousarray(np.array(rng, dtype=np.int64).reshape(-1))
+            kk = min(k, sum(hi - lo for lo, hi in rng))
+            idx = np.zeros(kk, dtype=np.int64)
+            dist = np.zeros(kk, dtype=np.int32)
+            got = self._lib.fk_topk_hamming_ranges(_ptr(sigs), words, _ptr(q), _ptr(flat), len(rng), kk,
+                                                   int(early_words) if early_words < words else 0, float(z),
+                                                   _ptr(idx), _ptr(dist))
+            if got < 0:
+                raise MemoryError("fk_topk_hamming_ranges: нехватка памяти")
+            return idx[:got], dist[:got]
+        parts_i, parts_d = [], []
+        for lo, hi in rng:
+            li, ld = self.topk_hamming(sigs[lo:hi], q, k)
+            parts_i.append(li + lo)
+            parts_d.append(ld)
+        all_i = np.concatenate(parts_i)
+        all_d = np.concatenate(parts_d)
+        order = np.lexsort((all_i, all_d))[:k]
+        return all_i[order], all_d[order]
 
     # ---- 2. int8 SQ8 ----
     def quantize_unit_i8(self, vec: np.ndarray) -> np.ndarray:

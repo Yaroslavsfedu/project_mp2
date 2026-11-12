@@ -26,6 +26,7 @@ IVF (этап 1 итерации 5). ``build_ivf`` обучает сфериче
 from __future__ import annotations
 
 import json
+import mmap as mmap_module
 import os
 import shutil
 import threading
@@ -187,7 +188,8 @@ class MmapVectorIndex:
         ids = np.memmap(self.dir / IDS_FILE, dtype=f"S{ID_BYTES}", mode="r", shape=(self.count,))
         return signs, int8, ids
 
-    def search(self, query: np.ndarray, k: int, rerank_factor: int, nprobe: int = 16) -> list[Candidate]:
+    def search(self, query: np.ndarray, k: int, rerank_factor: int, nprobe: int = 16, *,
+               early_words: int = 4, early_z: float = 2.0, prefetch: bool = True) -> list[Candidate]:
         """Top-k по косинусу: POPCNT-скан сигнатур (всех или только выбранных IVF-кластеров) → int8-доранжирование."""
         if k <= 0:
             return []
@@ -208,19 +210,15 @@ class MmapVectorIndex:
             ranges = [(0, count)]
         else:
             ranges = self._probe_ranges(q, ivf, ivf_count, count, cand, nprobe)
-        parts_idx, parts_dist = [], []
-        for lo, hi in ranges:
-            local_idx, local_dist = self.kernels.topk_hamming(signs[lo:hi], q_sig, cand)
-            if local_idx.size:
-                parts_idx.append(np.asarray(local_idx, dtype=np.int64) + lo)
-                parts_dist.append(np.asarray(local_dist))
-        if not parts_idx:
+        early = early_words if self.words >= 8 else 0  # ранний выход имеет смысл для длинных сигнатур
+        if prefetch:
+            for lo, hi in ranges:
+                _advise_willneed(signs, lo * self.words * 8, hi * self.words * 8)
+        # одна куча на все выбранные кластеры и дельту: общий порог быстро ужесточается
+        all_idx, _ = self.kernels.topk_hamming_ranges(signs, q_sig, ranges, cand,
+                                                      early_words=early, z=early_z)
+        if all_idx.size == 0:
             return []
-        all_idx = np.concatenate(parts_idx)
-        all_dist = np.concatenate(parts_dist)
-        if all_idx.size > cand:
-            sel = np.argpartition(all_dist, cand - 1)[:cand]
-            all_idx = all_idx[sel]
         scores = self.kernels.rerank_i8(int8, all_idx, q_i8).astype(np.float64) / (127.0 * 127.0)
         order = np.argsort(-scores, kind="stable")[:k]
         out: list[Candidate] = []
@@ -310,6 +308,25 @@ class MmapVectorIndex:
     def disk_bytes(self) -> int:
         names = (SIGNS_FILE, INT8_FILE, IDS_FILE, CENTROIDS_FILE, OFFSETS_FILE)
         return sum((self.dir / name).stat().st_size for name in names if (self.dir / name).exists())
+
+
+def _advise_willneed(arr: np.ndarray, byte_lo: int, byte_hi: int) -> None:
+    """madvise(MADV_WILLNEED) для диапазона отображения: ядро начинает подгружать страницы кластера заранее.
+
+    Подсказка необязательна: без поддержки (не Linux, нет _mmap) тихо ничего не делает.
+    """
+    mm = getattr(arr, "_mmap", None)
+    if mm is None or byte_hi <= byte_lo or not hasattr(mm, "madvise"):
+        return
+    page = mmap_module.PAGESIZE
+    start = (byte_lo // page) * page
+    length = min(byte_hi - start, len(mm) - start)
+    if length <= 0:
+        return
+    try:
+        mm.madvise(mmap_module.MADV_WILLNEED, start, length)
+    except (OSError, ValueError):
+        pass
 
 
 def _unit_rows(x: np.ndarray) -> np.ndarray:

@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     IVF_NPROBE: int = 8
     IVF_MIN_VECTORS: int = 20_000
     IVF_REBUILD_RATIO: float = 0.3
+    # ранний выход при сканировании сигнатур: сколько первых слов (×64 бит) читать до решения и ширина отсева z
+    VECTOR_EARLY_WORDS: int = 4
+    VECTOR_EARLY_Z: float = 2.0
     # FTS5 для полнотекстового поиска на SQLite (при недоступности FTS5 — прежний LIKE).
     SQLITE_FTS5: bool = True
     # Очередь Celery, за которой следит bulk_ingest (backpressure)
