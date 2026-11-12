@@ -81,6 +81,23 @@ class Settings(BaseSettings):
     OCR_DPI: int = 150
     PREPROCESS_ENABLED: bool = True
 
+    # --- Масштаб (2+ млн документов) ---
+    # Глубокий OFFSET растёт линейно: дальше этой позиции список отдаётся только курсором
+    LIST_OFFSET_MAX: int = 50_000
+    # Без фильтров и при таблице больше порога total берётся из pg_class.reltuples (оценка, без full scan)
+    COUNT_ESTIMATE_THRESHOLD: int = 100_000
+    # Точный COUNT с фильтрами кэшируется на время (секунды): повторные запросы не пересчитывают
+    COUNT_CACHE_TTL_SECONDS: int = 30
+    # Полнотекстовый поиск: сколько совпавших страниц берём-кандидатов до ранжирования (ts_rank)
+    FTS_CANDIDATE_LIMIT: int = 2000
+    # pgvector HNSW: сколько кандидатов обходить при запросе (больше — точнее, медленнее)
+    HNSW_EF_SEARCH: int = 100
+    # Дублировать вектор в JSON-колонке document_chunks.embedding на PostgreSQL.
+    # Для 2 млн документов это ~35 ГБ лишнего места: при работающем pgvector можно выключить.
+    STORE_JSON_EMBEDDINGS: bool = True
+    # Очередь Celery, за которой следит bulk_ingest (backpressure)
+    CELERY_QUEUE_NAME: str = "celery"
+
     # --- Демо-данные ---
     SEED_DEMO: bool = True
 

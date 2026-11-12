@@ -1,6 +1,7 @@
 """Асинхронная сессия SQLAlchemy 2.0."""
 import importlib
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from sqlalchemy import text
@@ -55,6 +56,33 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+# True, когда на PostgreSQL создан индекс pg_trgm по имени файла (ILIKE по filename идёт по индексу).
+trgm_filename_index_ready = False
+
+
+@asynccontextmanager
+async def gin_only(db: AsyncSession):
+    """Запрещает Seq Scan внутри блока (PostgreSQL). Нужно для полнотекстовых кандидатов.
+
+    Без этого планировщик на частом слове выбирает последовательное чтение с ранним выходом по LIMIT:
+    оно быстро только когда слово почти везде. Если слово в 1% строк, чтение пройдёт почти всю таблицу.
+    С запретом стоимость задаёт GIN-индекс: пропорционально числу совпадений, а не размеру таблицы.
+    Действует только внутри транзакции (SET LOCAL) и сразу возвращается обратно.
+    """
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        yield
+        return
+    await db.execute(text("SET LOCAL enable_seqscan = off"))
+    try:
+        yield
+    finally:
+        try:
+            await db.execute(text("SET LOCAL enable_seqscan = on"))
+        except Exception:  # noqa: BLE001 - транзакция могла быть прервана ошибкой запроса
+            pass
+
+
 async def init_db() -> None:
     """Создание схемы и идемпотентные дополнения (Docker-контур не запускает Alembic)."""
     # регистрация метаданных всех моделей; pyflakes не учитывает noqa, поэтому importlib
@@ -101,6 +129,13 @@ async def _apply_extras() -> None:
             "ALTER TABLE document_chunks ADD COLUMN embedding_model VARCHAR(32) NOT NULL DEFAULT 'fallback'",
             required=True,
         )
+    # составные индексы списка документов (для уже созданных таблиц create_all их не добавит)
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_documents_status_doctype_created "
+        "ON documents (status, doc_type, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_documents_created_id ON documents (created_at DESC, id)",
+    ):
+        await _execute(statement, required=False)
     if engine.dialect.name != "postgresql":
         return
     # Обязательные: без pgvector векторный поиск работает через JSON-вектора (медленнее)
@@ -110,8 +145,10 @@ async def _apply_extras() -> None:
         required=False,
     )
     await _execute(
+        # HNSW с явными параметрами: m=16 связей на узел и ef_construction=64 — компромисс
+        # между recall и памятью. Граф держится в shared_buffers/RAM: ~(m*2*8 + dim*4) байт на вектор.
         "CREATE INDEX IF NOT EXISTS ix_chunks_embedding_hnsw "
-        "ON document_chunks USING hnsw (embedding_vec vector_cosine_ops)",
+        "ON document_chunks USING hnsw (embedding_vec vector_cosine_ops) WITH (m = 16, ef_construction = 64)",
         required=False,
     )
     # полнотекстовый индекс с русской морфологией (то же выражение, что в search_service)
@@ -132,6 +169,10 @@ async def _apply_extras() -> None:
         "CREATE INDEX IF NOT EXISTS ix_documents_filename_trgm ON documents USING gin (filename gin_trgm_ops)",
         required=False,
     )
+    global trgm_filename_index_ready
+    async with engine.connect() as conn:
+        found = await conn.scalar(text("SELECT 1 FROM pg_indexes WHERE indexname = 'ix_documents_filename_trgm'"))
+    trgm_filename_index_ready = bool(found)
 
 
 async def _execute(statement: str, *, required: bool) -> None:

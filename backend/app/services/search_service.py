@@ -11,6 +11,7 @@ import time
 from sqlalchemy import and_, or_, select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.ml_pipeline.llm_service import embed_texts
 from app.services.vector_store import is_postgres, top_chunks_pg, top_chunks_sqlite
 from app.ml_pipeline.text_utils import (
@@ -79,41 +80,59 @@ async def _postgres_fulltext_hits(
         )
         params["organization"] = f"%{filters.organization}%"
 
-    # Сначала отбираем top-N страниц по рангу, и только для них строим ts_headline.
-    # Иначе headline считается для всех совпадений (общее слово совпадает почти везде) — это было ~400 мс.
+    # Ограниченный пул кандидатов (Bounded CTE). Слово «договор» может совпасть с миллионом страниц:
+    #  1. candidates — первые FTS_CANDIDATE_LIMIT совпадений по GIN-индексу search_tsv (без сортировки всей выборки);
+    #  2. ranked — ts_rank только по кандидатам, оставляем top-K;
+    #  3. ts_headline — только для K финальных строк (он дорогой, поэтому не для пула).
+    # Для редких слов пул не обрезается и ранжирование точное; для частых — приближённое (см. README).
+    candidate_limit = max(settings.FTS_CANDIDATE_LIMIT, limit)
+    params["cand"] = candidate_limit
     sql = f"""
-        WITH matched AS (
+        WITH candidates AS (
             SELECT p.id AS page_id,
                    p.document_id,
                    p.page_number,
+                   p.search_tsv,
+                   coalesce(p.corrected_text, p.raw_text) AS body
+            FROM ocr_pages p
+            JOIN documents d ON d.id = p.document_id
+            WHERE {' AND '.join(clauses)}
+            LIMIT :cand
+        ),
+        ranked AS (
+            SELECT c.document_id,
+                   c.page_number,
+                   c.body,
                    d.filename,
                    d.doc_type,
                    d.status,
                    d.created_at,
-                   coalesce(p.corrected_text, p.raw_text) AS body,
-                   ts_rank(p.search_tsv, plainto_tsquery('russian', :q)) AS rank
-            FROM ocr_pages p
-            JOIN documents d ON d.id = p.document_id
-            WHERE {' AND '.join(clauses)}
+                   ts_rank(c.search_tsv, plainto_tsquery('russian', :q)) AS rank
+            FROM candidates c
+            JOIN documents d ON d.id = c.document_id
             ORDER BY rank DESC, d.created_at DESC
             LIMIT :limit
         )
-        SELECT m.document_id,
-               m.filename,
-               m.doc_type,
-               m.status,
-               m.page_number,
-               m.rank,
+        SELECT r.document_id,
+               r.filename,
+               r.doc_type,
+               r.status,
+               r.page_number,
+               r.rank,
+               r.created_at,
                ts_headline(
                    'russian',
-                   m.body,
+                   r.body,
                    plainto_tsquery('russian', :q),
                    'StartSel=<b>, StopSel=</b>, MaxWords=45, MinWords=12'
                ) AS headline
-        FROM matched m
-        ORDER BY m.rank DESC, m.created_at DESC
+        FROM ranked r
+        ORDER BY r.rank DESC, r.created_at DESC
     """
-    rows = (await db.execute(sql_text(sql), params)).mappings().all()
+    from app.core.database import gin_only  # noqa: PLC0415 - импорт здесь: модуль БД грузит модели
+
+    async with gin_only(db):
+        rows = (await db.execute(sql_text(sql), params)).mappings().all()
     hits: list[SearchHit] = []
     for row in rows:
         headline = (row["headline"] or "").replace("<b>", "").replace("</b>", "")

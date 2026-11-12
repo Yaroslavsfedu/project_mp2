@@ -3,7 +3,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models.document import DocumentStatus
 from app.schemas.analysis import ExtractedEntities
 
 
@@ -86,9 +85,14 @@ class DocumentDetail(DocumentOut):
 
 class DocumentList(BaseModel):
     items: list[DocumentOut]
-    total: int
+    # None в курсорном режиме: точный счётчик там не нужен и на миллионах строк стоит дорого
+    total: int | None
+    # true — total взят из статистики PostgreSQL (pg_class.reltuples), а не посчитан точно
+    total_estimated: bool = False
     page: int
     limit: int
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class UploadResponse(BaseModel):

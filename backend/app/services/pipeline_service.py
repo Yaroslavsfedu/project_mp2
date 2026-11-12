@@ -35,8 +35,8 @@ from app.ml_pipeline.text_utils import chunk_text, normalize_text
 from app.models.document import Document, DocumentChunk, DocumentStatus, ExtractedData, OcrPage
 from app.models.user import new_uuid
 from app.services.events import publish_event
-from app.services.storage_service import storage
-from app.services.vector_store import save_pg_vectors
+from app.services.storage_service import page_image_key, storage
+from app.services.vector_store import is_postgres, save_pg_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -336,7 +336,7 @@ async def process_document(document_id: str) -> None:
         corrected_pages: list[str] = []
         correction_engines: set[str] = set()
         for page in pages:
-            image_key = f"pages/{document_id}/page-{page['number']}.png"
+            image_key = page_image_key(document_id, page["number"])
             await storage.put(image_key, page["png"])
             raw = normalize_text(page["text"])
             if raw:
@@ -422,7 +422,9 @@ async def process_document(document_id: str) -> None:
                         page_number=page_number,
                         chunk_index=index,
                         chunk_text=chunk,
-                        embedding=vector,
+                        # на PostgreSQL с pgvector вектор уже лежит в embedding_vec; JSON-копия
+                        # занимает ~10 КБ на чанк и при STORE_JSON_EMBEDDINGS=false не пишется
+                        embedding=vector if (settings.STORE_JSON_EMBEDDINGS or not is_postgres(session)) else [],
                         embedding_model=embed_engine,
                     )
                 )

@@ -20,7 +20,7 @@ from app.core.security import get_current_user
 from app.models.user import User
 from app.services.events import redis_listener
 from app.services.seed_service import seed_demo_data
-from app.services.storage_service import storage
+from app.services.storage_service import FILE_PREFIXES, storage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,7 +81,8 @@ async def get_stored_file(
     user: Annotated[User, Depends(get_current_user)],
 ):
     """Выдача файлов из локального хранилища (аналог S3 presigned URL)."""
-    allowed_prefixes = ("originals/", "pages/")
+    # uploads/ — новые оригиналы (шардирование), originals/ — прежняя плоская схема (совместимость)
+    allowed_prefixes = FILE_PREFIXES
     if not key.startswith(allowed_prefixes) or ".." in key:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл не найден")
     try:

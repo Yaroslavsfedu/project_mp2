@@ -7,13 +7,12 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.models.document import Document, DocumentStatus
 from app.models.user import User, UserRole
 from app.services import pipeline_service
-from app.services.storage_service import storage
+from app.services.storage_service import original_key, storage
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +66,7 @@ async def seed_demo_data() -> None:
             for path in files:
                 data = path.read_bytes()
                 document_id = str(uuid.uuid4())
-                key = f"originals/{document_id}/{path.name}"
+                key = original_key(document_id, path.name)
                 await storage.put(key, data)
                 session.add(
                     Document(

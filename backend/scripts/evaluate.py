@@ -45,7 +45,7 @@ from app.models.document import Document, DocumentStatus  # noqa: E402
 from app.models.user import User, UserRole  # noqa: E402
 from app.services import quality_service  # noqa: E402
 from app.services.pipeline_service import process_document  # noqa: E402
-from app.services.storage_service import storage  # noqa: E402
+from app.services.storage_service import original_key, storage  # noqa: E402
 
 
 async def ensure_eval_user() -> User:
@@ -83,7 +83,7 @@ async def evaluate_document(item: dict, samples_dir: Path, user: User) -> dict:
 
     data = source.read_bytes()
     document_id = str(uuid.uuid4())
-    key = f"originals/{document_id}/{source.name}"
+    key = original_key(document_id, source.name)
     await storage.put(key, data)
 
     async with SessionLocal() as session:

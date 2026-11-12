@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from datetime import timedelta
 from pathlib import Path
@@ -13,6 +14,45 @@ from pathlib import Path
 from app.core.config import settings
 
 _EXTRA_SAFE = set("._- ()[]")
+
+# UUID в каноническом виде: только так мы строим путь из ID (защита от Path Traversal)
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+# Ключи прежней плоской схемы (originals/{id}/..., pages/{id}/...) остаются читаемыми:
+# путь хранится в БД (documents.s3_key_original, ocr_pages.image_key), поэтому миграция файлов не нужна.
+LEGACY_ORIGINALS_PREFIX = "originals/"
+LEGACY_PAGES_PREFIX = "pages/"
+FILE_PREFIXES = ("uploads/", LEGACY_ORIGINALS_PREFIX, "pages/")
+
+
+def shard_dirs(doc_id: str) -> str:
+    """Двухуровневый шард по ID документа: ``ab/cd`` (по аналогии с Git objects).
+
+    65 536 листовых каталогов: при 2 млн документов ~30 файлов на каталог, а не 2 млн в одном.
+    """
+    if not _UUID_RE.match(doc_id or ""):
+        raise ValueError("Некорректный идентификатор документа")
+    return f"{doc_id[:2]}/{doc_id[2:4]}"
+
+
+def original_key(doc_id: str, filename: str) -> str:
+    """Ключ оригинала: ``uploads/ab/cd/{doc_id}_{filename}``. filename уже санирован."""
+    return f"uploads/{shard_dirs(doc_id)}/{doc_id}_{filename}"
+
+
+def page_image_key(doc_id: str, page_number: int) -> str:
+    """Ключ растра страницы: ``pages/ab/cd/{doc_id}/page-N.png``."""
+    return f"pages/{shard_dirs(doc_id)}/{doc_id}/page-{int(page_number)}.png"
+
+
+def document_prefixes(doc_id: str) -> list[str]:
+    """Все префиксы, где могут лежать файлы документа: новые (шард) и прежние (плоские)."""
+    shard = shard_dirs(doc_id)
+    return [
+        f"pages/{shard}/{doc_id}",
+        f"{LEGACY_PAGES_PREFIX}{doc_id}",
+        f"{LEGACY_ORIGINALS_PREFIX}{doc_id}",
+    ]
 
 
 def safe_filename(name: str) -> str:
@@ -73,6 +113,19 @@ class StorageService:
         path.write_bytes(data)
         return key
 
+    async def delete_key(self, key: str) -> None:
+        """Удаляет один объект по точному ключу (оригинал, отдельная страница)."""
+        if self.backend == "minio":
+            def _remove() -> None:
+                self._minio().remove_object(settings.MINIO_BUCKET, key)
+
+            try:
+                await asyncio.to_thread(_remove)
+            except Exception:  # noqa: BLE001 - объекта могло не быть
+                pass
+            return
+        self._local_path(key).unlink(missing_ok=True)
+
     async def get(self, key: str) -> bytes:
         if self.backend == "minio":
             def _get() -> bytes:
@@ -109,10 +162,15 @@ class StorageService:
         # локальный режим: файл отдаётся через защищённый эндпоинт API
         return f"{settings.API_V1_PREFIX}/files/{key}"
 
+    async def delete_document_files(self, doc_id: str, original_key_value: str | None) -> None:
+        """Удаляет оригинал и страницы документа: и по новым шард-путям, и по прежним плоским."""
+        if original_key_value:
+            await self.delete_key(original_key_value)
+        for prefix in document_prefixes(doc_id):
+            await self.delete_prefix(prefix)
+
     async def delete_prefix(self, prefix: str) -> None:
         if self.backend == "minio":
-            import io  # noqa: F401
-
             def _delete() -> None:
                 client = self._minio()
                 for obj in client.list_objects(settings.MINIO_BUCKET, prefix=prefix, recursive=True):

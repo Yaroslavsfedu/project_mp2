@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import mimetypes
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import func, inspect as sa_inspect, or_, select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +17,7 @@ from app.core.database import get_db
 from app.core.ratelimit import limit_upload
 from app.core.security import get_current_user
 from app.ml_pipeline.llm_service import answer_question, embed_texts
+from app.services.document_list_service import ListQuery, decode_cursor, list_documents_page
 from app.services.search_service import rank_document_chunks
 from app.models.document import Document, DocumentStatus, ExtractedData, OcrPage
 from app.models.user import User, UserRole, utcnow
@@ -33,7 +34,7 @@ from app.schemas.document import (
 )
 from app.services import pipeline_service
 from app.services.audit_service import log_action
-from app.services.storage_service import safe_filename, storage
+from app.services.storage_service import original_key, safe_filename, storage
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -147,7 +148,7 @@ async def upload_documents(
     for (original_name, data, suffix), upload in zip(prepared, files, strict=True):
         document_id = str(uuid.uuid4())
         filename = safe_filename(Path(original_name).stem) + suffix
-        key = f"originals/{document_id}/{filename}"
+        key = original_key(document_id, filename)
         await storage.put(key, data)
         document = Document(
             id=document_id,
@@ -191,7 +192,7 @@ async def upload_documents(
 async def list_documents(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, description="Номер страницы (offset-режим)"),
     limit: int = Query(20, ge=1, le=100),
     status_filter: str | None = Query(None, alias="status"),
     doc_type: str | None = None,
@@ -199,42 +200,53 @@ async def list_documents(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     sort: str = Query("created_at_desc"),
+    cursor: str | None = Query(None, description="Курсор из next_cursor предыдущего ответа (keyset)"),
+    after_created_at: datetime | None = Query(None, description="Альтернатива cursor: дата последней строки"),
+    after_id: str | None = Query(None, max_length=36, description="Альтернатива cursor: id последней строки"),
 ):
-    stmt = select(Document).options(selectinload(Document.extracted))
-    count_stmt = select(func.count(Document.id))
+    """Список документов.
 
-    conditions = []
-    if status_filter:
-        conditions.append(Document.status == status_filter)
-    if doc_type:
-        conditions.append(Document.doc_type == doc_type)
-    if date_from:
-        conditions.append(Document.created_at >= date_from)
-    if date_to:
-        conditions.append(Document.created_at <= date_to)
-    if query:
-        pattern = f"%{query.lower()}%"
-        subquery = select(OcrPage.document_id).where(
-            or_(func.lower(OcrPage.raw_text).like(pattern), func.lower(OcrPage.corrected_text).like(pattern))
+    * Без ``cursor`` — классическая пагинация ``page``/``limit``; глубина ограничена ``LIST_OFFSET_MAX``.
+    * С ``cursor`` — keyset-пагинация: стабильная и быстрая на миллионах строк. Первая страница —
+      без ``cursor``, далее передавайте ``next_cursor`` из ответа, пока ``has_more`` = true.
+    """
+    offset = (page - 1) * limit
+    keyset = cursor is not None or after_created_at is not None or after_id is not None
+    if not keyset and offset > settings.LIST_OFFSET_MAX:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Глубокая страница (смещение больше {settings.LIST_OFFSET_MAX}). "
+            "Используйте курсорную пагинацию: параметр cursor из поля next_cursor",
         )
-        conditions.append(or_(func.lower(Document.filename).like(pattern), Document.id.in_(subquery)))
-
-    for condition in conditions:
-        stmt = stmt.where(condition)
-        count_stmt = count_stmt.where(condition)
-
-    ordering = {
-        "created_at_asc": Document.created_at.asc(),
-        "created_at_desc": Document.created_at.desc(),
-        "filename": Document.filename.asc(),
-        "status": Document.status.asc(),
-    }.get(sort, Document.created_at.desc())
-
-    total = await db.scalar(count_stmt) or 0
-    rows = await db.execute(stmt.order_by(ordering).offset((page - 1) * limit).limit(limit))
-    items = [to_out(document) for document in rows.scalars().unique()]
-
-    return DocumentList(items=items, total=total, page=page, limit=limit)
+    list_query = ListQuery(
+        status=status_filter,
+        doc_type=doc_type,
+        date_from=date_from,
+        date_to=date_to,
+        query=query,
+        sort=sort,
+    )
+    decoded = None
+    if cursor:
+        decoded = decode_cursor(cursor)
+    elif after_created_at is not None or after_id is not None:
+        if after_created_at is None or not after_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Нужны оба параметра: after_created_at и after_id"
+            )
+        if after_created_at.tzinfo is None:
+            after_created_at = after_created_at.replace(tzinfo=UTC)
+        decoded = (after_created_at, after_id)
+    result = await list_documents_page(db, list_query, page=page, limit=limit, cursor=decoded)
+    return DocumentList(
+        items=[to_out(document) for document in result.items],
+        total=result.total,
+        total_estimated=result.total_estimated,
+        page=page,
+        limit=limit,
+        next_cursor=result.next_cursor,
+        has_more=result.has_more,
+    )
 
 
 # --------------------------------- detail ---------------------------------
@@ -408,8 +420,7 @@ async def delete_document(
         document=document,
         ip_address=request.client.host if request.client else None,
     )
-    await storage.delete_prefix(f"originals/{document_id}")
-    await storage.delete_prefix(f"pages/{document_id}")
+    await storage.delete_document_files(document_id, document.s3_key_original)
     await db.delete(document)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

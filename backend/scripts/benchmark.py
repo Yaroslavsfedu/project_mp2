@@ -40,7 +40,7 @@ from app.ml_pipeline.ocr_engine import resolve_engine  # noqa: E402
 from app.models.document import Document, DocumentStatus  # noqa: E402
 from app.models.user import User, UserRole  # noqa: E402
 from app.services.pipeline_service import process_document  # noqa: E402
-from app.services.storage_service import storage  # noqa: E402
+from app.services.storage_service import original_key, storage  # noqa: E402
 
 BENCH_TEXT = (
     "ДОГОВОР ПОСТАВКИ № 47/2024. г. Ростов-на-Дону, 12 марта 2024 г. "
@@ -69,7 +69,7 @@ async def ensure_user() -> User:
 async def run_document(path: Path, user: User) -> dict:
     data = path.read_bytes()
     document_id = str(uuid.uuid4())
-    await storage.put(f"originals/{document_id}/{path.name}", data)
+    await storage.put(original_key(document_id, path.name), data)
 
     async with SessionLocal() as session:
         session.add(
@@ -77,7 +77,7 @@ async def run_document(path: Path, user: User) -> dict:
                 id=document_id,
                 user_id=user.id,
                 filename=path.name,
-                s3_key_original=f"originals/{document_id}/{path.name}",
+                s3_key_original=original_key(document_id, path.name),
                 mime_type="application/octet-stream",
                 file_size=len(data),
                 status=DocumentStatus.PENDING,
