@@ -39,9 +39,8 @@ def _apply_filters(query, filters: SearchFilters):
         clauses.append(Document.created_at >= filters.date_from)
     if filters.date_to:
         clauses.append(Document.created_at <= filters.date_to)
-    if filters.organization:
-        pattern = f"%{filters.organization.lower()}%"
-        clauses.append(Document.doc_type.is_not(None))  # организация проверяется по тексту ниже
+    # фильтр по организации применяется к тексту страницы/чанка (см. ниже),
+    # так как организация — это извлечённая сущность, а не колонка таблицы
     return query.where(and_(*clauses)) if clauses else query
 
 
