@@ -6,19 +6,23 @@
 from __future__ import annotations
 
 import heapq
+import json
 import logging
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
-from sqlalchemy import select, text as sql_text
+from sqlalchemy import func, select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.ml_pipeline.text_utils import cosine
 from app.models.document import Document, DocumentChunk
+from app.services.mmap_index import MmapVectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -184,9 +188,16 @@ async def top_chunks_sqlite(
     Только вектора того же движка. Сложность — O(N) по числу чанков (SQLite не индексирует
     векторы), поэтому для миллионов чанков нужен PostgreSQL + pgvector (см. README).
     """
+    if limit <= 0:
+        return []
+    if await use_mmap_index(db, engine):
+        return await top_chunks_mmap(
+            db, query_vector, engine, limit=limit, document_id=document_id, doc_type=doc_type,
+            status=status, date_from=date_from, date_to=date_to, organization=organization,
+        )
     query = np.asarray(query_vector, dtype=np.float32)
     qnorm = float(np.linalg.norm(query))
-    if qnorm == 0.0 or limit <= 0:
+    if qnorm == 0.0:
         return []
     query = query / qnorm
 
@@ -269,3 +280,139 @@ def clear_vector_cache() -> None:
 def vector_cache_size() -> int:
     with _cache_lock:
         return len(_vector_cache)
+
+
+# ---------- mmap-индекс 1-bit + int8 для слабых машин (см. services/mmap_index.py) ----------
+_INDEX_SYNC_BATCH = 2_000
+_count_cache: dict[str, tuple[float, int]] = {}
+_COUNT_TTL_SECONDS = 30.0
+_indexes: dict[str, MmapVectorIndex] = {}
+
+
+def _index_dir(engine: str) -> Path:
+    return settings.DATA_DIR / "vector_index" / f"{engine}_{settings.EMBEDDING_DIM}"
+
+
+def _get_index(engine: str) -> MmapVectorIndex:
+    key = str(_index_dir(engine))
+    index = _indexes.get(key)
+    if index is None:
+        index = MmapVectorIndex(_index_dir(engine), settings.EMBEDDING_DIM)
+        _indexes[key] = index
+    return index
+
+
+async def _engine_chunk_count(db: AsyncSession, engine: str) -> int:
+    now = time.monotonic()
+    cached = _count_cache.get(engine)
+    if cached and now - cached[0] < _COUNT_TTL_SECONDS:
+        return cached[1]
+    count = int(await db.scalar(select(func.count()).select_from(DocumentChunk).where(
+        DocumentChunk.embedding_model == engine)) or 0)
+    _count_cache[engine] = (now, count)
+    return count
+
+
+async def use_mmap_index(db: AsyncSession, engine: str) -> bool:
+    """auto: mmap, когда чанков больше VECTOR_CACHE_LIMIT (там float-кэш уже не помещается в RAM слабой машины)."""
+    mode = settings.VECTOR_INDEX_MODE
+    if mode == "float" or is_postgres(db):
+        return False
+    if mode == "mmap_binary":
+        return True
+    return await _engine_chunk_count(db, engine) > VECTOR_CACHE_LIMIT
+
+
+async def sync_mmap_index(db: AsyncSession, engine: str) -> MmapVectorIndex:
+    """Дозаписывает в индекс новые чанки (rowid больше курсора). Удалённые остаются и отсеиваются при выборке."""
+    index = _get_index(engine)
+    top = int(await db.scalar(sql_text("SELECT COALESCE(MAX(rowid), 0) FROM document_chunks")) or 0)
+    if top < index.cursor:
+        # строки удалены с конца либо VACUUM перенумеровал rowid — курсор недостоверен, строим заново
+        index.rebuild()
+    while index.cursor < top:
+        rows = (await db.execute(
+            sql_text(
+                "SELECT rowid AS rid, id, embedding FROM document_chunks "
+                "WHERE rowid > :cursor AND rowid <= :top AND embedding_model = :engine "
+                "ORDER BY rowid LIMIT :batch"
+            ),
+            {"cursor": index.cursor, "top": top, "engine": engine, "batch": _INDEX_SYNC_BATCH},
+        )).all()
+        if not rows:
+            index.append([], None, cursor=top)
+            break
+        ids: list[str] = []
+        vectors: list[np.ndarray] = []
+        for row in rows:
+            embedding = row.embedding
+            values = json.loads(embedding) if isinstance(embedding, str) else (embedding or [])
+            if len(values) == settings.EMBEDDING_DIM:
+                vec = np.asarray(values, dtype=np.float32)
+                if float(np.linalg.norm(vec)) > 0.0:
+                    ids.append(row.id)
+                    vectors.append(vec)
+        last = int(rows[-1].rid)
+        if ids:
+            index.append(ids, np.stack(vectors), cursor=last)
+        else:
+            index.append([], None, cursor=last)
+    return index
+
+
+async def top_chunks_mmap(
+    db: AsyncSession,
+    query_vector: list[float],
+    engine: str,
+    *,
+    limit: int,
+    document_id: str | None = None,
+    doc_type: str | None = None,
+    status: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    organization: str | None = None,
+) -> list[ChunkHit]:
+    """Top-k через mmap-индекс: POPCNT-скан 1-битных сигнатур → int8-доранжирование → фильтры по таблице.
+
+    Фильтры применяются после выбора кандидатов, поэтому их берём с запасом (×10 от limit).
+    """
+    index = await sync_mmap_index(db, engine)
+    query = np.asarray(query_vector, dtype=np.float32)
+    if index.count == 0 or float(np.linalg.norm(query)) == 0.0:
+        return []
+    filtered = any([document_id, doc_type, status, date_from, date_to, organization])
+    want = limit * (10 if filtered else 1)
+    candidates = index.search(query, want, settings.VECTOR_INDEX_RERANK_FACTOR)
+    if not candidates:
+        return []
+    score_by_id = {c.chunk_id: c.score for c in candidates}
+    base = (
+        select(
+            DocumentChunk.id,
+            DocumentChunk.document_id,
+            DocumentChunk.page_number,
+            DocumentChunk.chunk_text,
+            Document.filename,
+            Document.doc_type,
+            Document.status,
+        )
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(DocumentChunk.id.in_(list(score_by_id)))
+    )
+    if document_id:
+        base = base.where(DocumentChunk.document_id == document_id)
+    if doc_type:
+        base = base.where(Document.doc_type == doc_type)
+    if status:
+        base = base.where(Document.status == status)
+    if date_from:
+        base = base.where(Document.created_at >= date_from)
+    if date_to:
+        base = base.where(Document.created_at <= date_to)
+    if organization:
+        base = base.where(DocumentChunk.chunk_text.ilike(f"%{organization}%"))
+    rows = (await db.execute(base)).all()  # удалённые чанки сюда не попадают
+    hits = [_hit(row, score_by_id[row.id]) for row in rows]
+    hits.sort(key=lambda h: h.similarity, reverse=True)
+    return hits[:limit]

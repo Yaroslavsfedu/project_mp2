@@ -41,6 +41,12 @@ if engine.dialect.name == "sqlite":
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
+        # Слабые машины: меньше fsync (WAL и так защищает от порчи), временные таблицы в RAM,
+        # кэш страниц 32 МБ и mmap-чтение файла БД до 256 МБ — без постоянного копирования в куче.
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.execute("PRAGMA cache_size=-32000")
+        cursor.execute("PRAGMA mmap_size=268435456")
         cursor.close()
 
 
@@ -91,9 +97,56 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _ensure_extras()
+    if engine.dialect.name == "sqlite":
+        await ensure_sqlite_fts5()
 
 
 _extras_ready = False
+
+# FTS5 по чанкам на SQLite: внешнее содержимое (document_chunks) + триггеры синхронной записи.
+# Если сборка SQLite без FTS5 — флаг остаётся False и поиск идёт прежним путём (LIKE).
+SQLITE_FTS5_READY = False
+FTS5_TABLE = "chunk_fts"
+
+
+async def ensure_sqlite_fts5() -> bool:
+    """Создаёт FTS5-таблицу и триггеры, индексирует уже существующие чанки. Идемпотентно."""
+    global SQLITE_FTS5_READY
+    if not settings.SQLITE_FTS5:
+        SQLITE_FTS5_READY = False
+        return False
+    try:
+        async with engine.begin() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"), {"n": FTS5_TABLE}
+            )
+            await conn.execute(text(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {FTS5_TABLE} USING fts5("
+                "chunk_text, content='document_chunks', content_rowid='rowid', tokenize='unicode61')"
+            ))
+            await conn.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS document_chunks_fts_ai AFTER INSERT ON document_chunks BEGIN "
+                f"INSERT INTO {FTS5_TABLE}(rowid, chunk_text) VALUES (new.rowid, new.chunk_text); END"
+            ))
+            await conn.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS document_chunks_fts_ad AFTER DELETE ON document_chunks BEGIN "
+                f"INSERT INTO {FTS5_TABLE}({FTS5_TABLE}, rowid, chunk_text) VALUES ('delete', old.rowid, old.chunk_text); END"
+            ))
+            await conn.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS document_chunks_fts_au AFTER UPDATE OF chunk_text ON document_chunks BEGIN "
+                f"INSERT INTO {FTS5_TABLE}({FTS5_TABLE}, rowid, chunk_text) VALUES ('delete', old.rowid, old.chunk_text); "
+                f"INSERT INTO {FTS5_TABLE}(rowid, chunk_text) VALUES (new.rowid, new.chunk_text); END"
+            ))
+            if not exists:
+                # таблица только что создана: переиндексируем уже существующие чанки
+                await conn.execute(text(f"INSERT INTO {FTS5_TABLE}({FTS5_TABLE}) VALUES ('rebuild')"))
+        SQLITE_FTS5_READY = True
+    except Exception as exc:  # noqa: BLE001 - сборка SQLite без FTS5: остаёмся на LIKE
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning("FTS5 недоступен, полнотекстовый поиск через LIKE: %s", exc)
+        SQLITE_FTS5_READY = False
+    return SQLITE_FTS5_READY
 
 FTS_COLUMN_SQL = (
     "ALTER TABLE ocr_pages ADD COLUMN IF NOT EXISTS search_tsv tsvector GENERATED ALWAYS AS "

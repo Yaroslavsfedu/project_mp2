@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app import models  # noqa: F401  (регистрация всех таблиц)
 from app.core.config import settings
 from app.core.database import Base
+
+importlib.import_module("app.models")  # регистрация всех таблиц (pyflakes не видит побочный импорт)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
