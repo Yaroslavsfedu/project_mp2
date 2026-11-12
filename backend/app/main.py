@@ -69,6 +69,9 @@ async def get_stored_file(
     user: Annotated[User, Depends(get_current_user)],
 ):
     """Выдача файлов из локального хранилища (аналог S3 presigned URL)."""
+    allowed_prefixes = ("originals/", "pages/")
+    if not key.startswith(allowed_prefixes) or ".." in key:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл не найден")
     try:
         path = await storage.local_path(key)
     except (FileNotFoundError, ValueError):

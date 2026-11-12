@@ -315,6 +315,10 @@ async def reprocess_document(
     document.status = DocumentStatus.PENDING
     document.progress = 0
     document.error_message = None
+    if document.extracted is not None:
+        # после повторной обработки результат требует новой проверки оператором
+        document.extracted.is_verified = False
+        document.extracted.verified_at = None
     await db.commit()
     pipeline_service.enqueue(document.id)
     return to_out(document)
