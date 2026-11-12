@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -15,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_roles
 from app.models.audit import AuditLog
 from app.models.document import Document, ExtractedData, OcrPage
 from app.models.user import User, UserRole

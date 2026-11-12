@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     # Дублировать вектор в JSON-колонке document_chunks.embedding на PostgreSQL.
     # Для 2 млн документов это ~35 ГБ лишнего места: при работающем pgvector можно выключить.
     STORE_JSON_EMBEDDINGS: bool = True
+    # Векторный индекс на SQLite (слабые машины): float-кэш в RAM или mmap-индекс на диске.
+    # auto — mmap, когда чанков больше VECTOR_CACHE_LIMIT; mmap_binary — всегда mmap; float — всегда кэш в RAM.
+    VECTOR_INDEX_MODE: str = "auto"
+    # Сколько кандидатов по Хэммингу доранжировать int8 относительно top-k (чем больше, тем точнее и медленнее).
+    VECTOR_INDEX_RERANK_FACTOR: int = 20
+    # FTS5 для полнотекстового поиска на SQLite (при недоступности FTS5 — прежний LIKE).
+    SQLITE_FTS5: bool = True
     # Очередь Celery, за которой следит bulk_ingest (backpressure)
     CELERY_QUEUE_NAME: str = "celery"
 

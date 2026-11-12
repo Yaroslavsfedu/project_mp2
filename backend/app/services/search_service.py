@@ -238,6 +238,62 @@ async def rank_document_chunks(
     return [(h.page_number, h.chunk_text) for h in hits]
 
 
+async def _sqlite_fts5_hits(db: AsyncSession, stems: list[str], filters: SearchFilters, limit: int) -> list[SearchHit]:
+    """Полнотекстовый поиск SQLite FTS5: bm25() для ранжирования, snippet() для фрагмента.
+
+    Термины — префиксы стемов (только [а-яёa-z0-9], поэтому кавычки безопасны). Индекс синхронно
+    обновляют триггеры из core/database.py. Ранг bm25 отрицательный: меньше — лучше.
+    """
+    from app.core.database import FTS5_TABLE  # noqa: PLC0415 - модуль БД грузит модели
+
+    match = " OR ".join(f'"{stem}"*' for stem in stems)
+    where = [f"{FTS5_TABLE} MATCH :match"]
+    params: dict = {"match": match, "limit": limit}
+    if filters.doc_type:
+        where.append("d.doc_type = :doc_type")
+        params["doc_type"] = filters.doc_type
+    if filters.status:
+        where.append("d.status = :status")
+        params["status"] = filters.status
+    if filters.date_from:
+        where.append("d.created_at >= :date_from")
+        params["date_from"] = filters.date_from.isoformat(sep=" ")
+    if filters.date_to:
+        where.append("d.created_at <= :date_to")
+        params["date_to"] = filters.date_to.isoformat(sep=" ")
+    if filters.organization:
+        where.append("c.chunk_text LIKE :org")
+        params["org"] = f"%{filters.organization}%"
+    sql = f"""
+        SELECT c.document_id, d.filename, d.doc_type, d.status, c.page_number,
+               snippet({FTS5_TABLE}, 0, '', '', '…', 24) AS snip,
+               bm25({FTS5_TABLE}) AS rank
+        FROM {FTS5_TABLE}
+        JOIN document_chunks c ON c.rowid = {FTS5_TABLE}.rowid
+        JOIN documents d ON d.id = c.document_id
+        WHERE {' AND '.join(where)}
+        ORDER BY rank
+        LIMIT :limit
+    """
+    rows = (await db.execute(sql_text(sql), params)).mappings().all()
+    hits: list[SearchHit] = []
+    for row in rows:
+        relevance = min(-float(row["rank"]), 20.0)  # bm25 отрицательный: |rank| — релевантность
+        hits.append(
+            SearchHit(
+                document_id=row["document_id"],
+                filename=row["filename"],
+                doc_type=row["doc_type"],
+                status=row["status"],
+                page_number=row["page_number"],
+                snippet=row["snip"],
+                score=round(min(0.55 + 0.05 * relevance, 1.0), 4),
+                match_type="fulltext",
+            )
+        )
+    return hits
+
+
 async def search_documents(db: AsyncSession, query: str, filters: SearchFilters, mode: str, limit: int) -> SearchResponse:
     started = time.perf_counter()
     terms = expand_query(query)
@@ -254,7 +310,17 @@ async def search_documents(db: AsyncSession, query: str, filters: SearchFilters,
         except Exception:  # noqa: BLE001 - деградируем к LIKE-поиску
             dialect = "fallback"
 
+    fts5_used = False
     if mode in ("fulltext", "hybrid") and stems and dialect != "postgresql":
+        from app.core.database import SQLITE_FTS5_READY  # noqa: PLC0415
+
+        if SQLITE_FTS5_READY:
+            try:
+                hits.extend(await _sqlite_fts5_hits(db, stems, filters, limit * 3))
+                fts5_used = True
+            except Exception:  # noqa: BLE001 - FTS5 не отвечает: остаёмся на LIKE
+                fts5_used = False
+    if mode in ("fulltext", "hybrid") and stems and dialect != "postgresql" and not fts5_used:
         conditions = [
             OcrPage.raw_text.ilike(f"%{stem}%") | OcrPage.corrected_text.ilike(f"%{stem}%")
             for stem in stems
