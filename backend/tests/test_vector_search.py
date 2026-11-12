@@ -60,9 +60,13 @@ async def test_numpy_search_matches_reference_ranking():
         )).scalars().all()
         reference = top_chunks_python(list(loaded), query, "fallback", 4)
 
-    assert [h.chunk_text for h in fast] == [c.chunk_text for c, _ in reference]
+    # Сравниваем оценки по позициям и совпадение ненулевых результатов.
+    # Чанки с нулевой оценкой (нет общих слов с запросом) идут в произвольном порядке при равенстве.
     for hit, (_, score) in zip(fast, reference, strict=True):
         assert abs(hit.similarity - score) < 1e-4
+    positive_fast = {h.chunk_text for h in fast if h.similarity > 0}
+    positive_ref = {c.chunk_text for c, s in reference if s > 0}
+    assert positive_fast == positive_ref
 
 
 async def test_other_engine_vectors_are_not_mixed():

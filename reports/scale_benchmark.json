@@ -1,0 +1,482 @@
+{
+  "generated_at": "2026-11-12T20:14:41.485241+00:00",
+  "environment": {
+    "python": "3.11.2",
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "cpu_count": 2,
+    "postgres": "16.2",
+    "pgvector": "0.6.2",
+    "embedding_dim": 1024,
+    "note": "песочница: 2 vCPU, 3 ГБ RAM; эмбеддинги случайные (для замера скорости индекса)"
+  },
+  "config": {
+    "sizes": [
+      2000,
+      20000,
+      100000
+    ],
+    "reps": 30,
+    "target_p95_ms": 100.0,
+    "fts_candidate_limit": 2000,
+    "hnsw_ef_search": 100,
+    "list_offset_max": 50000,
+    "count_estimate_threshold": 100000
+  },
+  "steps": [
+    {
+      "documents": 2000,
+      "chunks": 2000,
+      "load_seconds": 0.3,
+      "index_build_seconds_hnsw": 0.14,
+      "sizes_bytes": {
+        "documents_total": 1261568,
+        "documents_heap": 524288,
+        "ocr_pages_total": 6119424,
+        "ocr_pages_heap": 2736128,
+        "chunks_total": 26124288,
+        "chunks_heap": 1490944,
+        "hnsw_index": 13164544,
+        "documents_indexes": 704512,
+        "ocr_pages_indexes": 3350528
+      },
+      "bytes_per_document": {
+        "documents_total": 631,
+        "ocr_pages_total": 3060,
+        "chunks_total_incl_vectors": 13062,
+        "hnsw_index": 6582
+      },
+      "ops": {
+        "list_first_page_offset": {
+          "n": 30,
+          "p50_ms": 1.91,
+          "p95_ms": 2.11,
+          "mean_ms": 1.91
+        },
+        "list_deep_offset_50k": {
+          "n": 30,
+          "p50_ms": 1.63,
+          "p95_ms": 1.97,
+          "mean_ms": 1.64
+        },
+        "list_keyset_middle": {
+          "n": 30,
+          "p50_ms": 1.89,
+          "p95_ms": 2.62,
+          "mean_ms": 1.95
+        },
+        "list_keyset_filtered": {
+          "n": 30,
+          "p50_ms": 1.94,
+          "p95_ms": 2.86,
+          "mean_ms": 2.05
+        },
+        "count_no_filters_estimate": {
+          "n": 10,
+          "p50_ms": 0.85,
+          "p95_ms": 1.27,
+          "mean_ms": 0.94
+        },
+        "count_filtered_exact": {
+          "n": 10,
+          "p50_ms": 0.85,
+          "p95_ms": 0.87,
+          "mean_ms": 0.83
+        },
+        "list_q_common_word": {
+          "n": 10,
+          "p50_ms": 10.32,
+          "p95_ms": 10.88,
+          "mean_ms": 9.76
+        },
+        "fts_common_word": {
+          "n": 30,
+          "p50_ms": 13.51,
+          "p95_ms": 14.76,
+          "mean_ms": 13.04
+        },
+        "fts_rare_word": {
+          "n": 30,
+          "p50_ms": 4.13,
+          "p95_ms": 5.85,
+          "mean_ms": 4.3
+        },
+        "fts_medium_word": {
+          "n": 30,
+          "p50_ms": 3.56,
+          "p95_ms": 3.9,
+          "mean_ms": 3.6
+        },
+        "semantic_hnsw": {
+          "n": 30,
+          "p50_ms": 3.09,
+          "p95_ms": 3.66,
+          "mean_ms": 3.09
+        },
+        "hybrid": {
+          "n": 30,
+          "p50_ms": 8.98,
+          "p95_ms": 10.15,
+          "mean_ms": 9.09
+        }
+      },
+      "explain": null
+    },
+    {
+      "documents": 20000,
+      "chunks": 20000,
+      "load_seconds": 2.8,
+      "index_build_seconds_hnsw": 1.99,
+      "sizes_bytes": {
+        "documents_total": 11034624,
+        "documents_heap": 5283840,
+        "ocr_pages_total": 40837120,
+        "ocr_pages_heap": 27312128,
+        "chunks_total": 285171712,
+        "chunks_heap": 14901248,
+        "hnsw_index": 156532736,
+        "documents_indexes": 5709824,
+        "ocr_pages_indexes": 13434880
+      },
+      "bytes_per_document": {
+        "documents_total": 552,
+        "ocr_pages_total": 2042,
+        "chunks_total_incl_vectors": 14259,
+        "hnsw_index": 7827
+      },
+      "ops": {
+        "list_first_page_offset": {
+          "n": 30,
+          "p50_ms": 1.97,
+          "p95_ms": 2.36,
+          "mean_ms": 2.0
+        },
+        "list_deep_offset_50k": {
+          "n": 30,
+          "p50_ms": 7.77,
+          "p95_ms": 10.51,
+          "mean_ms": 8.19
+        },
+        "list_keyset_middle": {
+          "n": 30,
+          "p50_ms": 1.98,
+          "p95_ms": 3.28,
+          "mean_ms": 2.31
+        },
+        "list_keyset_filtered": {
+          "n": 30,
+          "p50_ms": 2.06,
+          "p95_ms": 2.49,
+          "mean_ms": 2.09
+        },
+        "count_no_filters_estimate": {
+          "n": 10,
+          "p50_ms": 2.26,
+          "p95_ms": 3.18,
+          "mean_ms": 2.39
+        },
+        "count_filtered_exact": {
+          "n": 10,
+          "p50_ms": 2.92,
+          "p95_ms": 3.33,
+          "mean_ms": 3.05
+        },
+        "list_q_common_word": {
+          "n": 10,
+          "p50_ms": 15.09,
+          "p95_ms": 15.85,
+          "mean_ms": 15.18
+        },
+        "fts_common_word": {
+          "n": 30,
+          "p50_ms": 17.51,
+          "p95_ms": 23.27,
+          "mean_ms": 17.69
+        },
+        "fts_rare_word": {
+          "n": 30,
+          "p50_ms": 2.2,
+          "p95_ms": 2.93,
+          "mean_ms": 2.29
+        },
+        "fts_medium_word": {
+          "n": 30,
+          "p50_ms": 1.76,
+          "p95_ms": 2.5,
+          "mean_ms": 1.78
+        },
+        "semantic_hnsw": {
+          "n": 30,
+          "p50_ms": 3.2,
+          "p95_ms": 3.94,
+          "mean_ms": 3.25
+        },
+        "hybrid": {
+          "n": 30,
+          "p50_ms": 3.85,
+          "p95_ms": 4.65,
+          "mean_ms": 3.89
+        }
+      },
+      "explain": null
+    },
+    {
+      "documents": 100000,
+      "chunks": 100000,
+      "load_seconds": 14.4,
+      "index_build_seconds_hnsw": 11.37,
+      "sizes_bytes": {
+        "documents_total": 54181888,
+        "documents_heap": 26419200,
+        "ocr_pages_total": 175603712,
+        "ocr_pages_heap": 142000128,
+        "chunks_total": 1440768000,
+        "chunks_heap": 77455360,
+        "hnsw_index": 794624000,
+        "documents_indexes": 27721728,
+        "ocr_pages_indexes": 33480704
+      },
+      "bytes_per_document": {
+        "documents_total": 542,
+        "ocr_pages_total": 1756,
+        "chunks_total_incl_vectors": 14408,
+        "hnsw_index": 7946
+      },
+      "ops": {
+        "list_first_page_offset": {
+          "n": 30,
+          "p50_ms": 1.85,
+          "p95_ms": 2.3,
+          "mean_ms": 1.9
+        },
+        "list_deep_offset_50k": {
+          "n": 30,
+          "p50_ms": 19.47,
+          "p95_ms": 25.85,
+          "mean_ms": 21.17
+        },
+        "list_keyset_middle": {
+          "n": 30,
+          "p50_ms": 1.87,
+          "p95_ms": 2.03,
+          "mean_ms": 1.86
+        },
+        "list_keyset_filtered": {
+          "n": 30,
+          "p50_ms": 1.99,
+          "p95_ms": 2.91,
+          "mean_ms": 2.09
+        },
+        "count_no_filters_estimate": {
+          "n": 10,
+          "p50_ms": 0.44,
+          "p95_ms": 0.48,
+          "mean_ms": 0.44
+        },
+        "count_filtered_exact": {
+          "n": 10,
+          "p50_ms": 11.0,
+          "p95_ms": 13.74,
+          "mean_ms": 11.53
+        },
+        "list_q_common_word": {
+          "n": 10,
+          "p50_ms": 28.98,
+          "p95_ms": 35.24,
+          "mean_ms": 29.36
+        },
+        "fts_common_word": {
+          "n": 30,
+          "p50_ms": 20.26,
+          "p95_ms": 27.08,
+          "mean_ms": 21.16
+        },
+        "fts_rare_word": {
+          "n": 30,
+          "p50_ms": 2.95,
+          "p95_ms": 5.61,
+          "mean_ms": 3.48
+        },
+        "fts_medium_word": {
+          "n": 30,
+          "p50_ms": 16.81,
+          "p95_ms": 18.46,
+          "mean_ms": 17.02
+        },
+        "semantic_hnsw": {
+          "n": 30,
+          "p50_ms": 2.33,
+          "p95_ms": 2.99,
+          "mean_ms": 2.43
+        },
+        "hybrid": {
+          "n": 30,
+          "p50_ms": 25.26,
+          "p95_ms": 28.93,
+          "mean_ms": 25.55
+        }
+      },
+      "explain": {
+        "fts_common_word_default_planner": [
+          "Limit (actual rows=2000 loops=1)",
+          "->  Nested Loop (actual rows=2000 loops=1)",
+          "->  Seq Scan on ocr_pages p (actual rows=2000 loops=1)",
+          "->  Index Only Scan using documents_pkey on documents d (actual rows=1 loops=2000)",
+          "Index Cond: (id = (p.document_id)::text)",
+          "Execution Time: 3.912 ms"
+        ],
+        "fts_common_word_gin_only": [
+          "Limit (actual rows=2000 loops=1)",
+          "->  Index Scan using ix_ocr_pages_document_id on ocr_pages p (actual rows=2000 loops=1)",
+          "->  Index Only Scan using documents_pkey on documents d (actual rows=2000 loops=1)",
+          "Execution Time: 3.065 ms"
+        ],
+        "fts_rare_word_gin_only": [
+          "Limit (actual rows=20 loops=1)",
+          "->  Nested Loop (actual rows=20 loops=1)",
+          "->  Bitmap Heap Scan on ocr_pages p (actual rows=20 loops=1)",
+          "->  Bitmap Index Scan on ix_ocr_pages_search_tsv (actual rows=20 loops=1)",
+          "Index Cond: (search_tsv @@ '''редкийтермин'''::tsquery)",
+          "->  Index Only Scan using documents_pkey on documents d (actual rows=1 loops=20)",
+          "Index Cond: (id = (p.document_id)::text)",
+          "Execution Time: 0.663 ms"
+        ],
+        "keyset_no_filter": [
+          "Limit (actual rows=20 loops=1)",
+          "->  Incremental Sort (actual rows=20 loops=1)",
+          "Sort Key: created_at DESC, id DESC",
+          "Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 26kB  Peak Memory: 26kB",
+          "->  Index Scan Backward using ix_documents_created_at on documents (actual rows=21 loops=1)",
+          "Index Cond: (created_at <= '2025-11-28 13:14:57.999951+00'::timestamp with time zone)",
+          "Execution Time: 0.045 ms"
+        ],
+        "keyset_status_doctype": [
+          "Limit (actual rows=20 loops=1)",
+          "->  Incremental Sort (actual rows=20 loops=1)",
+          "Sort Key: created_at DESC, id DESC",
+          "Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 26kB  Peak Memory: 26kB",
+          "->  Index Scan using ix_documents_status_doctype_created on documents (actual rows=21 loops=1)",
+          "Index Cond: (((status)::text = 'completed'::text) AND ((doc_type)::text = 'Договор'::text) AND (created_at <= '2025-11-28 13:14:57.999951+00'::timestamp with time zone))",
+          "Execution Time: 0.037 ms"
+        ],
+        "fts_candidates_common_word": [
+          "Limit (actual rows=2000 loops=1)",
+          "->  Index Scan using ix_ocr_pages_document_id on ocr_pages p (actual rows=2000 loops=1)",
+          "->  Index Only Scan using documents_pkey on documents d (actual rows=2000 loops=1)",
+          "Execution Time: 2.633 ms"
+        ],
+        "hnsw_knn": [
+          "Limit (actual rows=20 loops=1)",
+          "->  Limit (actual rows=1 loops=1)",
+          "->  Seq Scan on document_chunks (actual rows=1 loops=1)",
+          "->  Index Scan using ix_chunks_embedding_hnsw on document_chunks c (actual rows=20 loops=1)",
+          "Execution Time: 1.193 ms"
+        ]
+      }
+    }
+  ],
+  "scaling": {
+    "growth_factor_docs": 50.0,
+    "per_operation": {
+      "list_first_page_offset": {
+        "p95_first_ms": 2.11,
+        "p95_last_ms": 2.3,
+        "ratio_last_over_first": 1.09,
+        "max_p95_across_sizes_ms": 2.36
+      },
+      "list_deep_offset_50k": {
+        "p95_first_ms": 1.97,
+        "p95_last_ms": 25.85,
+        "ratio_last_over_first": 13.12,
+        "max_p95_across_sizes_ms": 25.85
+      },
+      "list_keyset_middle": {
+        "p95_first_ms": 2.62,
+        "p95_last_ms": 2.03,
+        "ratio_last_over_first": 0.77,
+        "max_p95_across_sizes_ms": 3.28
+      },
+      "list_keyset_filtered": {
+        "p95_first_ms": 2.86,
+        "p95_last_ms": 2.91,
+        "ratio_last_over_first": 1.02,
+        "max_p95_across_sizes_ms": 2.91
+      },
+      "count_no_filters_estimate": {
+        "p95_first_ms": 1.27,
+        "p95_last_ms": 0.48,
+        "ratio_last_over_first": 0.38,
+        "max_p95_across_sizes_ms": 3.18
+      },
+      "count_filtered_exact": {
+        "p95_first_ms": 0.87,
+        "p95_last_ms": 13.74,
+        "ratio_last_over_first": 15.79,
+        "max_p95_across_sizes_ms": 13.74
+      },
+      "list_q_common_word": {
+        "p95_first_ms": 10.88,
+        "p95_last_ms": 35.24,
+        "ratio_last_over_first": 3.24,
+        "max_p95_across_sizes_ms": 35.24
+      },
+      "fts_common_word": {
+        "p95_first_ms": 14.76,
+        "p95_last_ms": 27.08,
+        "ratio_last_over_first": 1.83,
+        "max_p95_across_sizes_ms": 27.08
+      },
+      "fts_rare_word": {
+        "p95_first_ms": 5.85,
+        "p95_last_ms": 5.61,
+        "ratio_last_over_first": 0.96,
+        "max_p95_across_sizes_ms": 5.85
+      },
+      "fts_medium_word": {
+        "p95_first_ms": 3.9,
+        "p95_last_ms": 18.46,
+        "ratio_last_over_first": 4.73,
+        "max_p95_across_sizes_ms": 18.46
+      },
+      "semantic_hnsw": {
+        "p95_first_ms": 3.66,
+        "p95_last_ms": 2.99,
+        "ratio_last_over_first": 0.82,
+        "max_p95_across_sizes_ms": 3.94
+      },
+      "hybrid": {
+        "p95_first_ms": 10.15,
+        "p95_last_ms": 28.93,
+        "ratio_last_over_first": 2.85,
+        "max_p95_across_sizes_ms": 28.93
+      }
+    }
+  },
+  "storage_fanout_2m": {
+    "documents": 2000000,
+    "leaf_directories": 65536,
+    "max_per_leaf": 57,
+    "mean_per_leaf": 30.5,
+    "flat_layout_entries_in_one_dir": 2000000
+  },
+  "passed_at_largest_size": {
+    "list_first_page_offset": true,
+    "list_deep_offset_50k": true,
+    "list_keyset_middle": true,
+    "list_keyset_filtered": true,
+    "count_no_filters_estimate": true,
+    "count_filtered_exact": true,
+    "list_q_common_word": true,
+    "fts_common_word": true,
+    "fts_rare_word": true,
+    "fts_medium_word": true,
+    "semantic_hnsw": true,
+    "hybrid": true
+  },
+  "passed": true,
+  "limitations": [
+    "замер до максимального размера из --sizes; 2 млн документов — экстраполяция по байтам на документ",
+    "GIN для частого слова: стоимость растёт с числом совпадений, поэтому FTS ограничен FTS_CANDIDATE_LIMIT",
+    "семантика: случайные векторы — замеряется скорость HNSW, а не качество выдачи",
+    "текст синтетический: «договор» есть почти во всех страницах (худший случай для FTS), «редкийтермин» — в 20 из 100000 страниц, «оригинал» — в 20%"
+  ]
+}

@@ -1,8 +1,7 @@
-import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -20,6 +19,13 @@ class DocumentStatus(StrEnum):
 
 class Document(Base):
     __tablename__ = "documents"
+    # Составные индексы под список и keyset-пагинацию (миграция d5a1c9e3f7b2 и init_db для уже созданных таблиц):
+    # (status, doc_type, created_at DESC) — фильтр + сортировка по дате без сортировки в памяти;
+    # (created_at DESC, id) — курсор «следующая страница» по умолчанию, без OFFSET.
+    __table_args__ = (
+        Index("ix_documents_status_doctype_created", "status", "doc_type", text("created_at DESC")),
+        Index("ix_documents_created_id", text("created_at DESC"), "id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)

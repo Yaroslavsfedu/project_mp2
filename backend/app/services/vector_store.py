@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import heapq
 import logging
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -14,6 +16,7 @@ import numpy as np
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.ml_pipeline.text_utils import cosine
 from app.models.document import Document, DocumentChunk
 
@@ -72,6 +75,11 @@ async def top_chunks_pg(
     if extra_sql:
         where.append(extra_sql)
         args.update(params or {})
+    # HNSW обходит ef_search кандидатов и только потом применяет WHERE: при фильтрах кандидатов
+    # нужно больше, иначе выдача станет короче limit. Значение действует до конца транзакции.
+    filtered = bool(document_id or extra_sql)
+    ef_search = max(settings.HNSW_EF_SEARCH, limit * (4 if filtered else 1))
+    await db.execute(sql_text(f"SET LOCAL hnsw.ef_search = {int(ef_search)}"))
     sql = f"""
         SELECT c.document_id, d.filename, d.doc_type, d.status, c.page_number, c.chunk_text,
                1 - (c.embedding_vec <=> CAST(:qv AS vector)) AS similarity
@@ -108,11 +116,13 @@ def top_chunks_python(chunks: list[DocumentChunk], query_vector: list[float], en
 
 
 # ---------- быстрый косинус для SQLite (без pgvector) ----------
-# Раньше каждый запрос загружал колонку embedding (JSON, 1024 числа на чанк) для всех чанков
-# и парсил её в ORM: на 1000 документов это ~320 мс. Теперь нормализованные вектора
-# хранятся в памяти процесса (float32), а косинус — одно матричное умножение.
-VECTOR_CACHE_LIMIT = 60_000  # чанков; при превышении кэш очищается (≈240 МБ при 1024 измерениях)
-_vector_cache: dict[str, "np.ndarray"] = {}
+# Нормализованные вектора (float32) лежат в памяти процесса. Кэш — LRU на OrderedDict:
+# при переполнении вытесняется самый давно использованный чанк, а не весь кэш (раньше кэш
+# обнулялся целиком, и при большой базе каждый запрос заново парсил JSON всех векторов).
+# Чтение идёт батчами по ключу id, поэтому память на запрос ограничена размером батча и top-K.
+VECTOR_CACHE_LIMIT = 60_000  # чанков (≈240 МБ при 1024 измерениях)
+SQLITE_SCAN_BATCH = 2_000  # строк за один проход сканирования
+_vector_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
 _cache_lock = threading.Lock()
 
 
@@ -122,6 +132,38 @@ def _normalize(values: list[float]) -> "np.ndarray | None":
     if arr.size == 0 or norm == 0.0:
         return None
     return arr / norm
+
+
+def _cache_get(chunk_id: str) -> "np.ndarray | None":
+    with _cache_lock:
+        vec = _vector_cache.get(chunk_id)
+        if vec is not None:
+            _vector_cache.move_to_end(chunk_id)
+        return vec
+
+
+def _cache_put(items: dict[str, "np.ndarray"]) -> None:
+    with _cache_lock:
+        for chunk_id, vec in items.items():
+            _vector_cache[chunk_id] = vec
+            _vector_cache.move_to_end(chunk_id)
+        while len(_vector_cache) > VECTOR_CACHE_LIMIT:
+            _vector_cache.popitem(last=False)  # LRU: вытесняем старейший
+
+
+async def _load_vectors(db: AsyncSession, chunk_ids: list[str]) -> None:
+    """Догружает в кэш вектора, которых там нет (JSON → float32), батчами по 500."""
+    for start in range(0, len(chunk_ids), 500):
+        batch = chunk_ids[start:start + 500]
+        result = await db.execute(
+            select(DocumentChunk.id, DocumentChunk.embedding).where(DocumentChunk.id.in_(batch))
+        )
+        loaded = {}
+        for chunk_id, embedding in result.all():
+            vec = _normalize(embedding or [])
+            if vec is not None:
+                loaded[chunk_id] = vec
+        _cache_put(loaded)
 
 
 async def top_chunks_sqlite(
@@ -137,14 +179,18 @@ async def top_chunks_sqlite(
     date_to: datetime | None = None,
     organization: str | None = None,
 ) -> list[ChunkHit]:
-    """Косинус по нормализованным векторам из кэша. Только вектора того же движка."""
+    """Косинус по нормализованным векторам: батчевый проход по id, top-K в куче.
+
+    Только вектора того же движка. Сложность — O(N) по числу чанков (SQLite не индексирует
+    векторы), поэтому для миллионов чанков нужен PostgreSQL + pgvector (см. README).
+    """
     query = np.asarray(query_vector, dtype=np.float32)
     qnorm = float(np.linalg.norm(query))
-    if qnorm == 0.0:
+    if qnorm == 0.0 or limit <= 0:
         return []
     query = query / qnorm
 
-    stmt = (
+    base = (
         select(
             DocumentChunk.id,
             DocumentChunk.document_id,
@@ -158,57 +204,68 @@ async def top_chunks_sqlite(
         .where(DocumentChunk.embedding_model == engine)
     )
     if document_id:
-        stmt = stmt.where(DocumentChunk.document_id == document_id)
+        base = base.where(DocumentChunk.document_id == document_id)
     if doc_type:
-        stmt = stmt.where(Document.doc_type == doc_type)
+        base = base.where(Document.doc_type == doc_type)
     if status:
-        stmt = stmt.where(Document.status == status)
+        base = base.where(Document.status == status)
     if date_from:
-        stmt = stmt.where(Document.created_at >= date_from)
+        base = base.where(Document.created_at >= date_from)
     if date_to:
-        stmt = stmt.where(Document.created_at <= date_to)
+        base = base.where(Document.created_at <= date_to)
     if organization:
-        stmt = stmt.where(DocumentChunk.chunk_text.ilike(f"%{organization}%"))
-    rows = (await db.execute(stmt)).all()
-    if not rows:
-        return []
+        base = base.where(DocumentChunk.chunk_text.ilike(f"%{organization}%"))
 
-    # догружаем только вектора, которых нет в кэше
-    missing = [row.id for row in rows if row.id not in _vector_cache]
-    if missing:
-        for start in range(0, len(missing), 500):
-            batch = missing[start:start + 500]
-            vec_rows = await db.execute(
-                select(DocumentChunk.id, DocumentChunk.embedding).where(DocumentChunk.id.in_(batch))
-            )
-            loaded = {chunk_id: _normalize(embedding or []) for chunk_id, embedding in vec_rows.all()}
-            with _cache_lock:
-                if len(_vector_cache) + len(loaded) > VECTOR_CACHE_LIMIT:
-                    _vector_cache.clear()
-                for chunk_id, vec in loaded.items():
-                    if vec is not None:
-                        _vector_cache[chunk_id] = vec
+    heap: list[tuple[float, int, ChunkHit]] = []  # min-heap из top-K
+    counter = 0
+    last_id: str | None = None
+    while True:
+        stmt = base
+        if last_id is not None:
+            stmt = stmt.where(DocumentChunk.id > last_id)
+        stmt = stmt.order_by(DocumentChunk.id).limit(SQLITE_SCAN_BATCH)
+        rows = (await db.execute(stmt)).all()
+        if not rows:
+            break
+        last_id = rows[-1].id
 
-    kept = [row for row in rows if row.id in _vector_cache]
-    if not kept:
-        return []
-    matrix = np.stack([_vector_cache[row.id] for row in kept])
-    scores = matrix @ query
-    order = np.argsort(-scores)[:limit]
-    return [
-        ChunkHit(
-            document_id=kept[i].document_id,
-            filename=kept[i].filename,
-            doc_type=kept[i].doc_type,
-            status=kept[i].status,
-            page_number=kept[i].page_number,
-            chunk_text=kept[i].chunk_text,
-            similarity=float(scores[i]),
-        )
-        for i in order
-    ]
+        missing = [row.id for row in rows if _cache_get(row.id) is None]
+        if missing:
+            await _load_vectors(db, missing)
+        kept = [(row, _cache_get(row.id)) for row in rows]
+        kept = [(row, vec) for row, vec in kept if vec is not None]
+        if not kept:
+            continue
+        scores = np.stack([vec for _, vec in kept]) @ query
+        best = np.argsort(-scores)[:limit]
+        for index in best:
+            row = kept[int(index)][0]
+            score = float(scores[index])
+            if len(heap) < limit:
+                heapq.heappush(heap, (score, counter, _hit(row, score)))
+            elif score > heap[0][0]:
+                heapq.heapreplace(heap, (score, counter, _hit(row, score)))
+            counter += 1
+    return [item[2] for item in sorted(heap, key=lambda item: item[0], reverse=True)]
+
+
+def _hit(row, score: float) -> ChunkHit:
+    return ChunkHit(
+        document_id=row.document_id,
+        filename=row.filename,
+        doc_type=row.doc_type,
+        status=row.status,
+        page_number=row.page_number,
+        chunk_text=row.chunk_text,
+        similarity=score,
+    )
 
 
 def clear_vector_cache() -> None:
     with _cache_lock:
         _vector_cache.clear()
+
+
+def vector_cache_size() -> int:
+    with _cache_lock:
+        return len(_vector_cache)
