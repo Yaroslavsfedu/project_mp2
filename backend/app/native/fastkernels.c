@@ -532,6 +532,83 @@ FK_EXPORT int64_t fk_hash_embed(const uint8_t *utf8, int64_t len, int32_t dim, f
 }
 
 /* ------------------------------------------------------------------ */
+/* 4. INT4 (512 Б на 1024-мерный вектор): хранение и доранжирование     */
+/* ------------------------------------------------------------------ */
+
+/* Упаковка: масштаб s = max|x|/7 на вектор; u = clamp(round(x/s), -7, 7) + 8 ∈ [1, 15].
+ * Байт j = u[j] (младший полубайт) | u[j + dim/2] << 4 (старший). Так SIMD не переставляет байты.
+ * dim должен быть чётным. packed — n×(dim/2) байт, scales — n float32. */
+FK_EXPORT void fk_quantize_i4_batch(const float *V, int64_t n, int64_t dim, uint8_t *packed, float *scales) {
+    int64_t half = dim / 2;
+    #pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n; i++) {
+        const float *x = V + (size_t)i * (size_t)dim;
+        uint8_t *out = packed + (size_t)i * (size_t)half;
+        float mx = 0.0f;
+        for (int64_t j = 0; j < dim; j++) {
+            float a = fabsf(x[j]);
+            if (a > mx) mx = a;
+        }
+        float s = mx > 0.0f ? mx / 7.0f : 1.0f;
+        float inv = 1.0f / s;
+        scales[i] = s;
+        for (int64_t j = 0; j < half; j++) {
+            long a = lround((double)x[j] * (double)inv);
+            long b = lround((double)x[j + half] * (double)inv);
+            a = a > 7 ? 7 : (a < -7 ? -7 : a);
+            b = b > 7 ? 7 : (b < -7 ? -7 : b);
+            out[j] = (uint8_t)((a + 8) | ((b + 8) << 4));
+        }
+    }
+}
+
+/* Скалярное произведение строки int4 с int8-запросом: Σ_j [lo_j·q_j + hi_j·q_{j+half}] (u-значения, без сдвига). */
+static inline int32_t dot_u4_row(const uint8_t *row, const int8_t *q, int64_t half) {
+    int32_t acc = 0;
+    int64_t j = 0;
+#if defined(__AVX2__)
+    const __m256i mask = _mm256_set1_epi8(0x0F);
+    const __m256i ones = _mm256_set1_epi16(1);
+    __m256i vacc = _mm256_setzero_si256();
+    for (; j + 32 <= half; j += 32) {
+        __m256i v = _mm256_loadu_si256((const __m256i *)(row + j));
+        __m256i lo = _mm256_and_si256(v, mask);
+        __m256i hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), mask);
+        __m256i q1 = _mm256_loadu_si256((const __m256i *)(q + j));
+        __m256i q2 = _mm256_loadu_si256((const __m256i *)(q + half + j));
+        /* maddubs: u8 × s8 → пары int16 без переполнения (|u|≤15, |q|≤127 → ≤3810) */
+        __m256i p1 = _mm256_maddubs_epi16(lo, q1);
+        __m256i p2 = _mm256_maddubs_epi16(hi, q2);
+        vacc = _mm256_add_epi32(vacc, _mm256_madd_epi16(p1, ones));
+        vacc = _mm256_add_epi32(vacc, _mm256_madd_epi16(p2, ones));
+    }
+    int32_t tmp[8];
+    _mm256_storeu_si256((__m256i *)tmp, vacc);
+    for (int t = 0; t < 8; t++) acc += tmp[t];
+#endif
+    for (; j < half; j++) {
+        int32_t lo = row[j] & 0x0F, hi = row[j] >> 4;
+        acc += lo * (int32_t)q[j] + hi * (int32_t)q[half + j];
+    }
+    return acc;
+}
+
+/* Доранжирование int4: score = s_row · Σ(u−8)·q / 127 (косинус, q — int8-запрос в масштабе 127).
+ * packed — все строки (n×dim/2), idx — выбранные строки, out — m float32. */
+FK_EXPORT void fk_rerank_i4(const uint8_t *packed, int64_t dim, const int64_t *idx, int64_t m,
+                            const int8_t *q, const float *scales, float *out) {
+    int64_t half = dim / 2;
+    int64_t sumq = 0;
+    for (int64_t j = 0; j < dim; j++) sumq += q[j];
+    for (int64_t t = 0; t < m; t++) {
+        int64_t r = idx[t];
+        int32_t acc = dot_u4_row(packed + (size_t)r * (size_t)half, q, half);
+        int64_t signed_dot = (int64_t)acc - 8 * sumq;
+        out[t] = (float)((double)scales[r] * (double)signed_dot / 127.0);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* 5. Пакетные функции с OpenMP (без GIL: один вызов из Python на весь батч) */
 /* ------------------------------------------------------------------ */
 

@@ -232,3 +232,100 @@ def test_multi_range_topk_equals_exact_over_union():
     dist = np.array([int(np.unpackbits((sigs[i] ^ q).view(np.uint8)).sum()) for i in union])
     order = np.lexsort((union, dist))[:60]
     assert np.array_equal(got_i, union[order]) and np.array_equal(got_d, dist[order])
+
+
+# ---------- INT4 (512 Б на 1024 измерения) ----------
+
+@NATIVE_ONLY
+@pytest.mark.parametrize("dim", [1024, 1000, 256])
+def test_int4_native_matches_numpy(dim):
+    rng = np.random.default_rng(dim)
+    vecs = _unit(rng.standard_normal((200, dim)).astype(np.float32))
+    native_p, native_s = K.quantize_i4_batch(vecs)
+    # эталон: та же упаковка, посчитанная NumPy
+    saved = K._lib
+    K._lib = None
+    try:
+        ref_p, ref_s = K.quantize_i4_batch(vecs)
+    finally:
+        K._lib = saved
+    assert np.allclose(native_s, ref_s, rtol=1e-6)
+    assert np.mean(native_p != ref_p) < 0.001  # расхождение только на точных полу-целых (округление)
+    q = K.quantize_unit_i8(vecs[0])
+    idx = np.arange(200, dtype=np.int64)
+    nat = K.rerank_i4(native_p, idx, q, native_s)
+    saved = K._lib
+    K._lib = None
+    try:
+        ref = K.rerank_i4(native_p, idx, q, native_s)
+    finally:
+        K._lib = saved
+    assert np.allclose(nat, ref, atol=1e-4)
+
+
+def test_int4_cosine_is_accurate():
+    rng = np.random.default_rng(21)
+    vecs = _unit(rng.standard_normal((300, 1024)).astype(np.float32))
+    packed, scales = K.quantize_i4_batch(vecs)
+    q = vecs[0]
+    qi8 = K.quantize_unit_i8(q)
+    est = K.rerank_i4(packed, np.arange(300, dtype=np.int64), qi8, scales)
+    true = vecs @ q
+    assert float(np.mean(np.abs(est - true))) < 0.02
+    assert int(np.argmax(est)) == 0
+
+
+@pytest.mark.parametrize("dim", [256, 1000])
+def test_int4_index_finds_self_and_trades_recall_for_memory(tmp_path, dim):
+    """int4 — опция экономии памяти. Измеряем recall@10 относительно точного косинуса (не относительно int8):
+    int4 заметно уступает int8 на близких по косинусу векторах (см. docs/REPORT), это зафиксировано в тесте."""
+    from app.services.mmap_index import MmapVectorIndex
+
+    rng = np.random.default_rng(dim + 1)
+    centers = rng.standard_normal((20, dim)).astype(np.float32)
+    v = centers[rng.integers(0, 20, size=1500)] + rng.standard_normal((1500, dim)).astype(np.float32) * 0.6
+    v = _unit(v)
+    i4 = MmapVectorIndex(tmp_path / "i4", dim, rerank_bits=4)
+    i8 = MmapVectorIndex(tmp_path / "i8", dim, rerank_bits=8)
+    ids = [f"c{i:05d}" for i in range(1500)]
+    i4.append(ids, v)
+    i8.append(ids, v)
+    assert (tmp_path / "i4" / "int4.bin").stat().st_size == 1500 * (dim // 2)
+    assert (tmp_path / "i4" / "scale.f32").stat().st_size == 1500 * 4
+    # допусковый recall: результат засчитывается, если его ТОЧНЫЙ косинус не ниже 10-го точного минус 0.01.
+    # Строгое совпадение позиций здесь бессмысленно: в top-10 много почти равных скоров (разница ~0.001).
+    t4, t8 = [], []
+    for qi in range(0, 1500, 150):
+        scores = v @ v[qi]
+        kth = np.sort(scores)[::-1][9]
+        top4 = [int(c.chunk_id[1:]) for c in i4.search(v[qi], 10, 100)]
+        top8 = [int(c.chunk_id[1:]) for c in i8.search(v[qi], 10, 100)]
+        assert top4[0] == qi
+        t4.append(sum(scores[j] >= kth - 0.01 for j in top4) / 10)
+        t8.append(sum(scores[j] >= kth - 0.01 for j in top8) / 10)
+    assert float(np.mean(t8)) >= 0.97
+    assert float(np.mean(t4)) >= 0.9  # int4 почти не теряет допусковый recall, но строгий recall ниже (см. REPORT)
+
+
+def test_int4_index_with_ivf(tmp_path):
+    from app.services.mmap_index import MmapVectorIndex
+
+    rng = np.random.default_rng(5)
+    centers = rng.standard_normal((16, 512)).astype(np.float32)
+    v = _unit(centers[rng.integers(0, 16, size=2400)] + rng.standard_normal((2400, 512)).astype(np.float32) * 0.5)
+    index = MmapVectorIndex(tmp_path / "ivf4", 512, rerank_bits=4)
+    index.append([f"c{i:05d}" for i in range(2400)], v)
+    assert index.build_ivf(clusters=16)["built"]
+    again = MmapVectorIndex(tmp_path / "ivf4", 512, rerank_bits=4)
+    assert again.ivf_count == 2400
+    assert again.search(v[77], 1, 100, nprobe=8)[0].chunk_id == "c00077"
+
+
+def test_switching_rerank_bits_rebuilds_index(tmp_path):
+    from app.services.mmap_index import MmapVectorIndex
+
+    rng = np.random.default_rng(6)
+    v = _unit(rng.standard_normal((50, 256)).astype(np.float32))
+    MmapVectorIndex(tmp_path / "sw", 256, rerank_bits=8).append([f"x{i}" for i in range(50)], v)
+    other = MmapVectorIndex(tmp_path / "sw", 256, rerank_bits=4)
+    assert other.count == 0  # другой способ хранения — индекс несовместим, перестраивается из таблицы

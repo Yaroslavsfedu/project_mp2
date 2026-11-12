@@ -1,24 +1,18 @@
 """Дисковый векторный индекс на memory-mapped файлах для слабых машин (Ultra-Low-Spec).
 
-Вместо кэша float32 в куче Python (4 КБ на чанк) хранятся три плоских файла на чанк:
+Вместо кэша float32 в куче Python (4 КБ на чанк) хранятся плоские файлы, по строке на чанк:
 
 * ``signs.bin`` — 1-битная сигнатура SimHash, 16×uint64 = 128 Б (POPCNT-скан Хэмминга). Биты — знаки
-  H·D·v (Адамар-вращение со случайными знаками D, seed PROJ_SEED, O(D log D) на вектор; формат v3).
-  Раньше (v2) использовалась плотная матрица dim×dim — O(D²) на вектор;
-* ``int8.bin``  — единичный вектор int8, 1024 Б (доранжирование кандидатов);
+  H·D·v (Адамар-вращение со случайными знаками D, seed PROJ_SEED, O(D log D) на вектор; формат v3);
+* доранжирование, один из двух вариантов (``rerank_bits``):
+  - ``int8.bin``  — единичный вектор int8, 1024 Б на 1024 измерения (rerank_bits = 8);
+  - ``int4.bin``  — 4-битные полубайты, 512 Б, + ``scale.f32`` (масштаб строки, 4 Б) (rerank_bits = 4);
 * ``ids.bin``   — UUID чанка, 36 Б (связь с таблицей document_chunks).
 
-IVF (этап 1 итерации 5). ``build_ivf`` обучает сферический K-Means (K ≈ 256) на подвыборке int8-векторов,
-назначает каждую строку ближайшему центроиду и ПЕРЕУКЛАДЫВАЕТ все три файла так, что векторы одного кластера
-лежат подряд. ``offsets.i64`` (K+1) — границы кластеров, ``centroids.f32`` (K×dim) — центроиды.
-Поиск: запрос сравнивается с K центроидами, берутся ``nprobe`` ближайших кластеров (и ещё, пока суммарный
-размер меньше числа кандидатов), каждый — непрерывный срез файла сигнатур. Строки после последней
-перестройки (хвост «дельта») дописываются в конец файлов и сканируются линейно, поэтому дозапись по курсору
-работает как раньше. Перестройка нужна, когда дельта выросла (см. ``ivf_needs_build``).
-
-Файлы читаются через ``numpy.memmap``: C-ядро получает прямой указатель на отображение
-(zero-copy), поэтому Python не копирует векторы. Расход RAM — страничный кэш ОС, который
-ядро может вытеснить; собственная куча процесса не растёт с размером базы.
+IVF. ``build_ivf`` обучает сферический K-Means (K ≈ 256) на подвыборке, назначает строки ближайшему центроиду
+и ПЕРЕУКЛАДЫВАЕТ файлы так, что векторы одного кластера лежат подряд (``offsets.i64`` — границы,
+``centroids.f32`` — центроиды). Поиск: ближайшие ``nprobe`` кластеров (и ещё, пока суммарный размер
+меньше числа кандидатов) плюс хвост-дельта — строки после последней перестройки, дописанные в конец файлов.
 
 Файлы только дописываются; удалённые чанки остаются в индексе и отфильтровываются при выборке
 по таблице (см. vector_store.top_chunks_mmap). Полная пересборка — ``rebuild()``.
@@ -38,15 +32,17 @@ import numpy as np
 from app.native.loader import get_kernels, sign_vector
 
 META_FILE = "meta.json"
-PROJ_SEED = 20261112  # фиксированный seed: построение и запрос обязаны использовать одну матрицу
+PROJ_SEED = 20261112  # фиксированный seed: построение и запрос обязаны использовать одни и те же знаки
 SIGNS_FILE = "signs.bin"
 INT8_FILE = "int8.bin"
+INT4_FILE = "int4.bin"
+SCALE_FILE = "scale.f32"
 IDS_FILE = "ids.bin"
 ID_BYTES = 36
 CENTROIDS_FILE = "centroids.f32"
 OFFSETS_FILE = "offsets.i64"
 FORMAT_VERSION = 3  # v3: SimHash через FWHT-вращение (v2 — плотная проекция, несовместима → переиндексация).
-#                    IVF-поля в meta необязательны: индекс без них читается, IVF просто не построен.
+#                    IVF-поля и поля rerank в meta необязательны: отсутствующие значат «нет IVF» и int8.
 IVF_BLOCK = 8192  # строк за раз при назначении кластеров и переукладке (ограничение RAM)
 KMEANS_SAMPLE = 20_000
 KMEANS_ITERS = 8
@@ -55,14 +51,21 @@ KMEANS_ITERS = 8
 @dataclass
 class Candidate:
     chunk_id: str
-    score: float  # приближение косинуса по int8 (1.0 = совпадение направления)
+    score: float  # косинус (приближённо) по int8 или int4 (1.0 = совпадение направления)
 
 
 class MmapVectorIndex:
-    def __init__(self, directory: Path, dim: int) -> None:
+    def __init__(self, directory: Path, dim: int, rerank_bits: int = 8) -> None:
+        if rerank_bits not in (4, 8):
+            raise ValueError("rerank_bits должен быть 4 или 8")
+        if rerank_bits == 4 and dim % 2:
+            raise ValueError("int4 требует чётной размерности")
         self.dir = Path(directory)
         self.dim = dim
         self.words = (dim + 63) // 64
+        self.rerank_bits = rerank_bits
+        self._rerank_file = INT4_FILE if rerank_bits == 4 else INT8_FILE
+        self._rerank_rec = dim // 2 if rerank_bits == 4 else dim  # байт на строку доранжирования
         self._lock = threading.Lock()
         self.kernels = get_kernels()
         self.count = 0
@@ -90,16 +93,21 @@ class MmapVectorIndex:
         if not self.meta_path.exists():
             return
         meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
-        if meta.get("version") != FORMAT_VERSION or meta.get("dim") != self.dim:
-            # другой формат или размерность — индекс несовместим, начинаем заново
+        bits = int(meta.get("rerank_bits", 8))  # индексы без поля созданы int8
+        if meta.get("version") != FORMAT_VERSION or meta.get("dim") != self.dim or bits != self.rerank_bits:
+            # другой формат, размерность или способ доранжирования — индекс несовместим, начинаем заново
             self.count, self.cursor = 0, 0
             return
         self.count = int(meta.get("count", 0))
         self.cursor = int(meta.get("cursor", 0))
         # страховка от рассинхронизации файлов (например, прерванная запись): берём минимум
-        self.count = min(self.count, self._file_count(self.dir / SIGNS_FILE, self.words * 8),
-                         self._file_count(self.dir / INT8_FILE, self.dim),
-                         self._file_count(self.dir / IDS_FILE, ID_BYTES))
+        counts = [self.count,
+                  self._file_count(self.dir / SIGNS_FILE, self.words * 8),
+                  self._file_count(self.dir / self._rerank_file, self._rerank_rec),
+                  self._file_count(self.dir / IDS_FILE, ID_BYTES)]
+        if self.rerank_bits == 4:
+            counts.append(self._file_count(self.dir / SCALE_FILE, 4))
+        self.count = min(counts)
         self._load_ivf(int(meta.get("ivf_count", 0)), int(meta.get("ivf_clusters", 0)))
 
     def _load_ivf(self, ivf_count: int, clusters: int) -> None:
@@ -127,6 +135,7 @@ class MmapVectorIndex:
         tmp = self.meta_path.with_suffix(".tmp")
         tmp.write_text(
             json.dumps({"version": FORMAT_VERSION, "dim": self.dim, "count": self.count, "cursor": self.cursor,
+                        "rerank_bits": self.rerank_bits,
                         "ivf_count": self.ivf_count, "ivf_clusters": self.ivf_clusters}),
             encoding="utf-8",
         )
@@ -139,6 +148,13 @@ class MmapVectorIndex:
                 shutil.rmtree(self.dir)
             self.count, self.cursor = 0, 0
             self.ivf_count, self.ivf_clusters, self._ivf = 0, 0, None
+
+    def _layout(self) -> list[tuple[str, int]]:
+        """(имя файла, байт на строку) для всех файлов по строкам. Порядок важен только внутри одного индекса."""
+        layout = [(SIGNS_FILE, self.words * 8), (self._rerank_file, self._rerank_rec), (IDS_FILE, ID_BYTES)]
+        if self.rerank_bits == 4:
+            layout.append((SCALE_FILE, 4))
+        return layout
 
     # ---------- запись ----------
     def append(self, chunk_ids: list[str], vectors: np.ndarray, cursor: int | None = None) -> None:
@@ -154,26 +170,29 @@ class MmapVectorIndex:
             raise ValueError(f"ожидалась форма ({len(chunk_ids)}, {self.dim}), получено {vecs.shape}")
         dsign, pad = self.rotation
         signs = self.kernels.simhash_fwht(vecs, dsign, pad)  # пакетно (OpenMP, если доступно)
-        int8 = self.kernels.quantize_unit_i8_batch(vecs)
+        if self.rerank_bits == 4:
+            rerank, scales = self.kernels.quantize_i4_batch(vecs)
+        else:
+            rerank, scales = self.kernels.quantize_unit_i8_batch(vecs), None
         ids = np.array([cid.encode("ascii").ljust(ID_BYTES, b" ")[:ID_BYTES] for cid in chunk_ids],
                        dtype=f"S{ID_BYTES}")
+        payload = {SIGNS_FILE: signs, self._rerank_file: rerank, IDS_FILE: ids}
+        if scales is not None:
+            payload[SCALE_FILE] = scales
         with self._lock:
             self.dir.mkdir(parents=True, exist_ok=True)
             # выравниваем файлы по count на случай прерванной прошлой записи
             self._truncate_to(self.count)
-            with open(self.dir / SIGNS_FILE, "ab") as f:
-                signs.tofile(f)
-            with open(self.dir / INT8_FILE, "ab") as f:
-                int8.tofile(f)
-            with open(self.dir / IDS_FILE, "ab") as f:
-                ids.tofile(f)
+            for name, _rec in self._layout():
+                with open(self.dir / name, "ab") as f:
+                    np.ascontiguousarray(payload[name]).tofile(f)
             self.count += len(chunk_ids)
             if cursor is not None:
                 self.cursor = max(self.cursor, cursor)
             self._save_meta()
 
     def _truncate_to(self, count: int) -> None:
-        for name, rec in ((SIGNS_FILE, self.words * 8), (INT8_FILE, self.dim), (IDS_FILE, ID_BYTES)):
+        for name, rec in self._layout():
             path = self.dir / name
             if path.exists() and path.stat().st_size != count * rec:
                 with open(path, "r+b") as f:
@@ -181,16 +200,22 @@ class MmapVectorIndex:
 
     # ---------- чтение (zero-copy) ----------
     def _maps(self):
+        """(signs, rerank, ids, scales|None) как memmap; None, если строк нет."""
         if self.count == 0:
             return None
         signs = np.memmap(self.dir / SIGNS_FILE, dtype=np.uint64, mode="r", shape=(self.count, self.words))
-        int8 = np.memmap(self.dir / INT8_FILE, dtype=np.int8, mode="r", shape=(self.count, self.dim))
+        if self.rerank_bits == 4:
+            rerank = np.memmap(self.dir / INT4_FILE, dtype=np.uint8, mode="r", shape=(self.count, self._rerank_rec))
+            scales = np.memmap(self.dir / SCALE_FILE, dtype=np.float32, mode="r", shape=(self.count,))
+        else:
+            rerank = np.memmap(self.dir / INT8_FILE, dtype=np.int8, mode="r", shape=(self.count, self.dim))
+            scales = None
         ids = np.memmap(self.dir / IDS_FILE, dtype=f"S{ID_BYTES}", mode="r", shape=(self.count,))
-        return signs, int8, ids
+        return signs, rerank, ids, scales
 
     def search(self, query: np.ndarray, k: int, rerank_factor: int, nprobe: int = 16, *,
                early_words: int = 4, early_z: float = 2.0, prefetch: bool = True) -> list[Candidate]:
-        """Top-k по косинусу: POPCNT-скан сигнатур (всех или только выбранных IVF-кластеров) → int8-доранжирование."""
+        """Top-k по косинусу: POPCNT-скан сигнатур (всех или только выбранных IVF-кластеров) → доранжирование."""
         if k <= 0:
             return []
         # Снимок состояния под блокировкой: файлы и границы кластеров должны относиться к одной перестройке.
@@ -200,7 +225,7 @@ class MmapVectorIndex:
                 return []
             ivf = self._ivf if self.ivf_count > 0 else None
             ivf_count, count = self.ivf_count, self.count
-        signs, int8, ids = maps
+        signs, rerank, ids, scales = maps
         q = np.asarray(query, dtype=np.float32)
         dsign, pad = self.rotation
         q_sig = self.kernels.simhash_fwht(q, dsign, pad)
@@ -219,7 +244,10 @@ class MmapVectorIndex:
                                                       early_words=early, z=early_z)
         if all_idx.size == 0:
             return []
-        scores = self.kernels.rerank_i8(int8, all_idx, q_i8).astype(np.float64) / (127.0 * 127.0)
+        if self.rerank_bits == 4:
+            scores = self.kernels.rerank_i4(rerank, all_idx, q_i8, scales).astype(np.float64)
+        else:
+            scores = self.kernels.rerank_i8(rerank, all_idx, q_i8).astype(np.float64) / (127.0 * 127.0)
         order = np.argsort(-scores, kind="stable")[:k]
         out: list[Candidate] = []
         for pos in order:
@@ -263,11 +291,11 @@ class MmapVectorIndex:
             k = min(int(clusters), n)
             if n < 2 or k < 2:
                 return {"built": False, "count": n}
-            signs, int8, ids = self._maps()
+            signs, rerank, ids, scales = self._maps()
             rng = np.random.default_rng(PROJ_SEED)
             m = min(n, max(KMEANS_SAMPLE, k))
             pick = np.sort(rng.choice(n, size=m, replace=False))
-            x = _unit_rows(np.asarray(int8[pick], dtype=np.float32))
+            x = _unit_rows(self._dequantize(rerank, scales, pick))
             cent = x[rng.choice(m, size=k, replace=False)].copy()
             for _ in range(KMEANS_ITERS):
                 a = np.argmax(x @ cent.T, axis=1)
@@ -283,16 +311,18 @@ class MmapVectorIndex:
                 cent = _unit_rows(new)
             assign = np.empty(n, dtype=np.int64)
             for s in range(0, n, IVF_BLOCK):
-                block = np.asarray(int8[s:s + IVF_BLOCK], dtype=np.float32)
+                block = _unit_rows(self._dequantize(rerank, scales, np.arange(s, min(s + IVF_BLOCK, n))))
                 assign[s:s + IVF_BLOCK] = np.argmax(block @ cent.T, axis=1)
             order = np.argsort(assign, kind="stable")
             counts = np.bincount(assign, minlength=k)
             offsets = np.zeros(k + 1, dtype=np.int64)
             offsets[1:] = np.cumsum(counts)
             # переукладка: каждый файл пишем во временный, потом атомарно подменяем
-            _permute_into(signs, order, self.dir / SIGNS_FILE)
-            _permute_into(int8, order, self.dir / INT8_FILE)
-            _permute_into(ids, order, self.dir / IDS_FILE)
+            sources = {SIGNS_FILE: signs, self._rerank_file: rerank, IDS_FILE: ids}
+            if scales is not None:
+                sources[SCALE_FILE] = scales
+            for name, _rec in self._layout():
+                _permute_into(sources[name], order, self.dir / name)
             tmp = self.dir / (CENTROIDS_FILE + ".tmp")
             cent.astype(np.float32).tofile(tmp)
             os.replace(tmp, self.dir / CENTROIDS_FILE)
@@ -305,9 +335,32 @@ class MmapVectorIndex:
             return {"built": True, "count": n, "clusters": k,
                     "min_cluster": int(counts.min()), "max_cluster": int(counts.max())}
 
+    def _dequantize(self, rerank, scales, rows) -> np.ndarray:
+        """Приблизительные float-векторы строк (для K-Means и назначения кластеров)."""
+        rows = np.asarray(rows, dtype=np.int64)
+        if self.rerank_bits == 4:
+            packed = np.asarray(rerank[rows], dtype=np.int32)
+            u = np.concatenate([(packed & 0x0F) - 8, (packed >> 4) - 8], axis=1).astype(np.float32)
+            return u * np.asarray(scales[rows], dtype=np.float32)[:, None]
+        return np.asarray(rerank[rows], dtype=np.float32)
+
     def disk_bytes(self) -> int:
-        names = (SIGNS_FILE, INT8_FILE, IDS_FILE, CENTROIDS_FILE, OFFSETS_FILE)
+        names = [SIGNS_FILE, INT8_FILE, INT4_FILE, SCALE_FILE, IDS_FILE, CENTROIDS_FILE, OFFSETS_FILE]
         return sum((self.dir / name).stat().st_size for name in names if (self.dir / name).exists())
+
+
+def _unit_rows(x: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(x, axis=1, keepdims=True)
+    return (x / np.maximum(norms, 1e-12)).astype(np.float32)
+
+
+def _permute_into(src: np.ndarray, order: np.ndarray, path: Path) -> None:
+    """Пишет строки src в порядке order во временный файл и атомарно заменяет path (блоками, без полной копии в RAM)."""
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "wb") as f:
+        for s in range(0, order.size, IVF_BLOCK):
+            np.ascontiguousarray(src[order[s:s + IVF_BLOCK]]).tofile(f)
+    os.replace(tmp, path)
 
 
 def _advise_willneed(arr: np.ndarray, byte_lo: int, byte_hi: int) -> None:
@@ -327,17 +380,3 @@ def _advise_willneed(arr: np.ndarray, byte_lo: int, byte_hi: int) -> None:
         mm.madvise(mmap_module.MADV_WILLNEED, start, length)
     except (OSError, ValueError):
         pass
-
-
-def _unit_rows(x: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(x, axis=1, keepdims=True)
-    return (x / np.maximum(norms, 1e-12)).astype(np.float32)
-
-
-def _permute_into(src: np.ndarray, order: np.ndarray, path: Path) -> None:
-    """Пишет строки src в порядке order во временный файл и атомарно заменяет path (блоками, без полной копии в RAM)."""
-    tmp = path.with_suffix(".tmp")
-    with open(tmp, "wb") as f:
-        for s in range(0, order.size, IVF_BLOCK):
-            src[order[s:s + IVF_BLOCK]].tofile(f)
-    os.replace(tmp, path)

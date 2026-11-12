@@ -298,7 +298,7 @@ def _get_index(engine: str) -> MmapVectorIndex:
     key = str(_index_dir(engine))
     index = _indexes.get(key)
     if index is None:
-        index = MmapVectorIndex(_index_dir(engine), settings.EMBEDDING_DIM)
+        index = MmapVectorIndex(_index_dir(engine), settings.EMBEDDING_DIM, rerank_bits=settings.VECTOR_RERANK_BITS)
         _indexes[key] = index
     return index
 

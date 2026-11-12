@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     # ранний выход при сканировании сигнатур: сколько первых слов (×64 бит) читать до решения и ширина отсева z
     VECTOR_EARLY_WORDS: int = 4
     VECTOR_EARLY_Z: float = 2.0
+    # доранжирование: 8 бит (int8, 1024 Б/вектор, точнее) или 4 бита (int4, 512 Б/вектор, половина диска/кэша)
+    VECTOR_RERANK_BITS: int = 8
     # FTS5 для полнотекстового поиска на SQLite (при недоступности FTS5 — прежний LIKE).
     SQLITE_FTS5: bool = True
     # Очередь Celery, за которой следит bulk_ingest (backpressure)

@@ -91,6 +91,8 @@ def _bind(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.fk_fwht.argtypes = [P, i64]
     lib.fk_simhash_fwht.argtypes = [P, i64, P, i64, i64, P]
     lib.fk_simhash_fwht_batch.argtypes = [P, i64, i64, P, i64, i64, P]
+    lib.fk_quantize_i4_batch.argtypes = [P, i64, i64, P, P]
+    lib.fk_rerank_i4.argtypes = [P, i64, P, i64, P, P, P]
     return lib
 
 
@@ -302,6 +304,46 @@ class FastKernels:
         all_d = np.concatenate(parts_d)
         order = np.lexsort((all_i, all_d))[:k]
         return all_i[order], all_d[order]
+
+    # ---- 2b. int4 (512 Б на 1024 измерения) ----
+    def quantize_i4_batch(self, vecs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(n, dim) → упакованные полубайты (n, dim/2) uint8 и масштабы (n,) float32. dim должен быть чётным."""
+        batch = np.ascontiguousarray(vecs, dtype=np.float32)
+        n, dim = batch.shape
+        if dim % 2:
+            raise ValueError("int4-упаковка требует чётной размерности")
+        half = dim // 2
+        packed = np.zeros((n, half), dtype=np.uint8)
+        scales = np.zeros(n, dtype=np.float32)
+        if self._lib is not None and n:
+            self._lib.fk_quantize_i4_batch(_ptr(batch), n, dim, _ptr(packed), _ptr(scales))
+            return packed, scales
+        mx = np.max(np.abs(batch), axis=1) if n else np.zeros(0, np.float32)
+        s = np.where(mx > 0, mx / 7.0, 1.0).astype(np.float32)
+        scales[:] = s
+        q = np.clip(np.floor(batch / s[:, None] + 0.5), -7, 7).astype(np.int32)  # round half up (≈ lround)
+        u = (q + 8).astype(np.uint8)
+        packed[:] = u[:, :half] | (u[:, half:] << 4)
+        return packed, scales
+
+    def rerank_i4(self, packed: np.ndarray, idx: np.ndarray, query_i8: np.ndarray, scales: np.ndarray) -> np.ndarray:
+        """Косинус для выбранных строк int4-хранилища: s_row · Σ(u−8)·q / 127. Возвращает float32 (m,)."""
+        m = idx.shape[0]
+        out = np.zeros(m, dtype=np.float32)
+        if m == 0:
+            return out
+        q = np.ascontiguousarray(query_i8, dtype=np.int8)
+        dim = q.shape[0]
+        ids = np.ascontiguousarray(idx, dtype=np.int64)
+        if self._lib is not None:
+            self._lib.fk_rerank_i4(_ptr(packed), dim, _ptr(ids), m, _ptr(q), _ptr(scales), _ptr(out))
+            return out
+        rows = np.asarray(packed[ids], dtype=np.int32)
+        half = dim // 2
+        u_lo = rows & 0x0F
+        u_hi = rows >> 4
+        signed = (u_lo - 8) @ q[:half].astype(np.int32) + (u_hi - 8) @ q[half:].astype(np.int32)
+        return (np.asarray(scales[ids], dtype=np.float64) * signed / 127.0).astype(np.float32)
 
     # ---- 2. int8 SQ8 ----
     def quantize_unit_i8(self, vec: np.ndarray) -> np.ndarray:
