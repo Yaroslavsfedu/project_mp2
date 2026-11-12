@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
     RATE_LIMIT_UPLOAD_PER_MINUTE: int = 30
+    # auto — Redis (REDIS_URL), при недоступности память процесса; redis / memory — принудительно
+    RATE_LIMIT_BACKEND: str = "auto"
     # Доверять X-Forwarded-For можно только когда API стоит за своим reverse-proxy (nginx),
     # иначе клиент подменяет заголовок и обходит лимит.
     TRUST_PROXY_HEADERS: bool = False

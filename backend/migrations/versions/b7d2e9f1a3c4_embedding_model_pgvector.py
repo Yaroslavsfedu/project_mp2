@@ -22,6 +22,25 @@ depends_on: Union[str, Sequence[str], None] = None
 VECTOR_DIM = 1024
 
 
+def _extension_available(name: str) -> bool:
+    row = op.get_bind().execute(
+        sa.text("SELECT 1 FROM pg_available_extensions WHERE name = :name"), {"name": name}
+    ).first()
+    return row is not None
+
+
+def _optional(sql: str, label: str) -> bool:
+    """Необязательный шаг в SAVEPOINT: ошибка не отменяет всю миграцию."""
+    bind = op.get_bind()
+    try:
+        with bind.begin_nested():
+            bind.execute(sa.text(sql))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[миграция] пропущено ({label}): {str(exc).splitlines()[0]}")
+        return False
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     columns = {c["name"] for c in sa.inspect(bind).get_columns("document_chunks")}
@@ -32,11 +51,18 @@ def upgrade() -> None:
         )
     if bind.dialect.name != "postgresql":
         return
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.execute(f"ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding_vec vector({VECTOR_DIM})")
-    op.execute(
+    # pgvector — расширение из образа pgvector. Без него вектора хранятся в JSON,
+    # а поиск работает медленнее: миграция не падает, а предупреждает.
+    if not _extension_available("vector"):
+        print("[миграция] расширение vector недоступно: колонка embedding_vec не создана")
+        return
+    if not _optional("CREATE EXTENSION IF NOT EXISTS vector", "vector"):
+        return
+    _optional(f"ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding_vec vector({VECTOR_DIM})", "embedding_vec")
+    _optional(
         "CREATE INDEX IF NOT EXISTS ix_chunks_embedding_hnsw "
-        "ON document_chunks USING hnsw (embedding_vec vector_cosine_ops)"
+        "ON document_chunks USING hnsw (embedding_vec vector_cosine_ops)",
+        "HNSW-индекс",
     )
 
 
