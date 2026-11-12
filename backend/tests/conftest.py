@@ -18,6 +18,8 @@ os.environ["OLLAMA_URL"] = "http://127.0.0.1:1"  # заведомо недост
 os.environ["SECRET_KEY"] = "test-secret"
 # лимиты проверяются отдельным тестом, иначе фикстура логина упирается в 429
 os.environ["RATE_LIMIT_ENABLED"] = "false"
+# счётчики в памяти процесса: Redis-бэкенд проверяется отдельным тестом
+os.environ["RATE_LIMIT_BACKEND"] = "memory"
 
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402

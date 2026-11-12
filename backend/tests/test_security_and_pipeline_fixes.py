@@ -14,7 +14,7 @@ from app.ml_pipeline import llm_service
 from app.ml_pipeline.text_utils import hashing_embedding
 from app.core.http import content_disposition
 from app.models.document import DocumentChunk
-from app.services.search_service import top_chunks_python
+from app.services.vector_store import top_chunks_python
 from app.services.storage_service import safe_filename
 
 

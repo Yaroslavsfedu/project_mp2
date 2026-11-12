@@ -89,7 +89,10 @@ services:
       OLLAMA_URL: http://ollama:11434
       MINIO_ENDPOINT: minio:9000
       SEED_DEMO: "false"
-      TRUST_PROXY_HEADERS: "true"  # API за nginx: IP клиента из X-Forwarded-For
+      # API стоит только за nginx (frontend): доверяем X-Forwarded-For, который пишет nginx.
+      # Порт 8000 наружу НЕ публикуется — иначе клиент обойдёт прокси и подделает заголовок.
+      TRUST_PROXY_HEADERS: "true"
+      RATE_LIMIT_BACKEND: auto  # Redis (общий счётчик для воркеров), память — при сбое Redis
     volumes:
       - appdata:/app/data
     depends_on:
@@ -99,8 +102,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     restart: unless-stopped
 
   celery_worker:
@@ -128,7 +131,7 @@ services:
   frontend:
     build: ./frontend
     depends_on:
-      - backend
+      - backend  # единственная точка входа для браузера и API: http://localhost:8080
     ports:
       - "8080:80"
     restart: unless-stopped

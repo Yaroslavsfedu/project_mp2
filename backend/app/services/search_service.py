@@ -12,14 +12,14 @@ from sqlalchemy import and_, or_, select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ml_pipeline.llm_service import embed_texts
-from app.services.vector_store import is_postgres, top_chunks_pg, top_chunks_python
+from app.services.vector_store import is_postgres, top_chunks_pg, top_chunks_sqlite
 from app.ml_pipeline.text_utils import (
     expand_query,
     make_snippet,
     normalize_text,
     tokenize,
 )
-from app.models.document import Document, DocumentChunk, OcrPage
+from app.models.document import Document, OcrPage
 from app.schemas.document import SearchFilters, SearchHit, SearchResponse
 
 STEM_LENGTH = 5
@@ -58,8 +58,7 @@ async def _postgres_fulltext_hits(
     находит «неустойки», «неустойку» и т.д. Индекс GIN создаётся миграцией.
     """
     clauses = [
-        "to_tsvector('russian', coalesce(p.corrected_text, '') || ' ' || coalesce(p.raw_text, '')) "
-        "@@ plainto_tsquery('russian', :q)"
+        "p.search_tsv @@ plainto_tsquery('russian', :q)"
     ]
     params: dict = {"q": query, "limit": limit}
     if filters.doc_type:
@@ -80,27 +79,39 @@ async def _postgres_fulltext_hits(
         )
         params["organization"] = f"%{filters.organization}%"
 
+    # Сначала отбираем top-N страниц по рангу, и только для них строим ts_headline.
+    # Иначе headline считается для всех совпадений (общее слово совпадает почти везде) — это было ~400 мс.
     sql = f"""
-        SELECT p.document_id,
-               d.filename,
-               d.doc_type,
-               d.status,
-               p.page_number,
-               ts_rank(
-                   to_tsvector('russian', coalesce(p.corrected_text, '') || ' ' || coalesce(p.raw_text, '')),
-                   plainto_tsquery('russian', :q)
-               ) AS rank,
+        WITH matched AS (
+            SELECT p.id AS page_id,
+                   p.document_id,
+                   p.page_number,
+                   d.filename,
+                   d.doc_type,
+                   d.status,
+                   d.created_at,
+                   coalesce(p.corrected_text, p.raw_text) AS body,
+                   ts_rank(p.search_tsv, plainto_tsquery('russian', :q)) AS rank
+            FROM ocr_pages p
+            JOIN documents d ON d.id = p.document_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY rank DESC, d.created_at DESC
+            LIMIT :limit
+        )
+        SELECT m.document_id,
+               m.filename,
+               m.doc_type,
+               m.status,
+               m.page_number,
+               m.rank,
                ts_headline(
                    'russian',
-                   coalesce(p.corrected_text, p.raw_text),
+                   m.body,
                    plainto_tsquery('russian', :q),
                    'StartSel=<b>, StopSel=</b>, MaxWords=45, MinWords=12'
                ) AS headline
-        FROM ocr_pages p
-        JOIN documents d ON d.id = p.document_id
-        WHERE {' AND '.join(clauses)}
-        ORDER BY rank DESC, d.created_at DESC
-        LIMIT :limit
+        FROM matched m
+        ORDER BY m.rank DESC, m.created_at DESC
     """
     rows = (await db.execute(sql_text(sql), params)).mappings().all()
     hits: list[SearchHit] = []
@@ -137,20 +148,21 @@ async def _semantic_hits(
         except Exception:  # noqa: BLE001 - деградируем к поиску по JSON-векторам
             found = []
     if not found:
-        stmt = select(DocumentChunk, Document).join(Document, Document.id == DocumentChunk.document_id)
-        stmt = _apply_filters(stmt, filters)
-        rows = (await db.execute(stmt)).all()
-        candidates = []
-        for chunk, document in rows:
-            if filters.organization and filters.organization.lower() not in chunk.chunk_text.lower():
-                continue
-            candidates.append((chunk, document))
-        ranked = top_chunks_python([c for c, _ in candidates], query_vector, engine, limit)
-        doc_by_chunk = {id(c): d for c, d in candidates}
-        for chunk, similarity in ranked:
-            document = doc_by_chunk[id(chunk)]
-            found.append((document.id, document.filename, document.doc_type, document.status,
-                          chunk.page_number, chunk.chunk_text, similarity))
+        hits_sql = await top_chunks_sqlite(
+            db,
+            query_vector,
+            engine,
+            limit=limit,
+            doc_type=filters.doc_type,
+            status=filters.status,
+            date_from=filters.date_from,
+            date_to=filters.date_to,
+            organization=filters.organization,
+        )
+        found = [
+            (h.document_id, h.filename, h.doc_type, h.status, h.page_number, h.chunk_text, h.similarity)
+            for h in hits_sql
+        ]
 
     hits: list[SearchHit] = []
     for doc_id, filename, doc_type, status, page_number, chunk_text, similarity in found:
@@ -203,11 +215,8 @@ async def rank_document_chunks(
             return [(h.page_number, h.chunk_text) for h in hits]
         except Exception:  # noqa: BLE001
             pass
-    rows = (
-        await db.execute(select(DocumentChunk).where(DocumentChunk.document_id == document_id))
-    ).scalars().all()
-    ranked = top_chunks_python(list(rows), query_vector, engine, limit)
-    return [(chunk.page_number, chunk.chunk_text) for chunk, _ in ranked]
+    hits = await top_chunks_sqlite(db, query_vector, engine, limit=limit, document_id=document_id)
+    return [(h.page_number, h.chunk_text) for h in hits]
 
 
 async def search_documents(db: AsyncSession, query: str, filters: SearchFilters, mode: str, limit: int) -> SearchResponse:

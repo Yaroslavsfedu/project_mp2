@@ -1,4 +1,5 @@
 """Асинхронная сессия SQLAlchemy 2.0."""
+import importlib
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -20,9 +21,27 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    # SQLite не поддерживает pool-настройки PostgreSQL
-    **({} if settings.DATABASE_URL.startswith("sqlite") else {"pool_size": 10, "max_overflow": 20}),
+    # SQLite не поддерживает pool-настройки PostgreSQL; вместо них — ожидание блокировки записи
+    # (фоновые задачи и запросы API пишут в одну базу; без таймаута сразу падает "database is locked")
+    **(
+        {"connect_args": {"timeout": 30}}
+        if settings.DATABASE_URL.startswith("sqlite")
+        else {"pool_size": 10, "max_overflow": 20}
+    ),
 )
+
+if engine.dialect.name == "sqlite":
+    from sqlalchemy import event
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_on_connect(dbapi_connection, _record) -> None:  # noqa: ANN001
+        # WAL: читатели не блокируют писателей — иначе фоновая обработка и API мешают друг другу
+        # ("database is locked"). busy_timeout — ждать освобождения блокировки, а не падать сразу.
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
+
 
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -38,7 +57,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """Создание схемы и идемпотентные дополнения (Docker-контур не запускает Alembic)."""
-    from app import models  # noqa: F401  (регистрация метаданных)
+    # регистрация метаданных всех моделей; pyflakes не учитывает noqa, поэтому importlib
+    importlib.import_module("app.models")  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -46,6 +66,11 @@ async def init_db() -> None:
 
 
 _extras_ready = False
+
+FTS_COLUMN_SQL = (
+    "ALTER TABLE ocr_pages ADD COLUMN IF NOT EXISTS search_tsv tsvector GENERATED ALWAYS AS "
+    "(to_tsvector('russian', coalesce(corrected_text, '') || ' ' || coalesce(raw_text, ''))) STORED"
+)
 
 
 async def _ensure_extras() -> None:
@@ -93,6 +118,12 @@ async def _apply_extras() -> None:
     await _execute(
         "CREATE INDEX IF NOT EXISTS ix_ocr_pages_fts_russian ON ocr_pages USING gin ("
         "to_tsvector('russian', coalesce(corrected_text, '') || ' ' || coalesce(raw_text, '')))",
+        required=False,
+    )
+    # хранимый tsvector: ranking читает готовый вектор, а не пересчитывает to_tsvector для каждой строки
+    await _execute(FTS_COLUMN_SQL, required=False)
+    await _execute(
+        "CREATE INDEX IF NOT EXISTS ix_ocr_pages_search_tsv ON ocr_pages USING gin (search_tsv)",
         required=False,
     )
     # pg_trgm ускоряет поиск по имени файла; в минимальных сборках PostgreSQL его может не быть

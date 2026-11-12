@@ -125,7 +125,8 @@ make dev
 | `OCR_ENGINE` | `auto` | `auto` · `tesseract` · `ollama` (VLM) · `native` (только текстовый слой) |
 | `QUEUE_BACKEND` | `inline` | `inline` — фоновые задачи в процессе API; `celery` — отдельный воркер + Redis |
 | `RATE_LIMIT_ENABLED` | `true` | лимиты на вход (10/мин) и загрузку (30/мин) с одного IP |
-| `TRUST_PROXY_HEADERS` | `false` | учитывать `X-Forwarded-For` — **включайте только за своим reverse-proxy** |
+| `TRUST_PROXY_HEADERS` | `false` | учитывать `X-Forwarded-For` — **включайте только за своим reverse-proxy** (в Docker включено для nginx) |
+| `RATE_LIMIT_BACKEND` | `auto` | лимиты в Redis (общие для воркеров); при недоступности Redis — память процесса |
 
 Полный список с комментариями — в [`.env.example`](.env.example).
 
@@ -168,9 +169,11 @@ make docker-down
 
 | Адрес | Сервис |
 |---|---|
-| http://localhost:8080 | frontend (nginx) |
-| http://localhost:8000/api/docs | API |
+| http://localhost:8080 | веб-интерфейс (nginx) |
+| http://localhost:8080/api/docs | Swagger (API за nginx) |
 | http://localhost:9001 | консоль MinIO |
+
+API наружу не публикуется: все запросы идут через nginx на :8080. Это нужно для корректного лимита запросов по IP.
 
 Перед запуском в Docker измените пароли и `SECRET_KEY` в `docker-compose.yml`.
 
@@ -193,11 +196,26 @@ make docker-down
 
 Скорость и нагрузка: `make benchmark` (`reports/benchmark.json`) и `make load-test COUNT=50` (`reports/load_test.json`).
 
+### Скорость поиска на 1000+ документах (ТЗ §13: < 200 мс)
+
+`make search-bench` создаёт 1000 документов из реальных текстов демо-датасета (с чанками и эмбеддингами),
+замеряет поиск в режимах fulltext / semantic / hybrid и удаляет тестовые данные. Отчёт — `reports/search_benchmark.json`.
+
+| База | Режим | p95 на сервисном уровне | p95 через HTTP API |
+|---|---|---|---|
+| PostgreSQL 16 + pgvector | fulltext | 22 мс | 24 мс |
+| PostgreSQL 16 + pgvector | semantic | 8 мс | 11 мс |
+| PostgreSQL 16 + pgvector | hybrid | 30 мс | 34 мс |
+| SQLite (по умолчанию) | semantic | 31 мс | — |
+
+Замер выполнен на 2 vCPU без GPU, эмбеддинги — fallback (hashing). С bge-m3 через Ollama семантическая часть
+добавит время на вычисление вектора запроса. Это время не измерялось и в замер не входит.
+
 ---
 
 ## API
 
-Все методы описаны в Swagger: http://localhost:8000/api/docs. Основные:
+Все методы описаны в Swagger: http://localhost:8000/api/docs (при запуске `make dev`; в Docker — http://localhost:8080/api/docs). Основные:
 
 | Метод и путь | Назначение |
 |---|---|
@@ -221,7 +239,7 @@ make docker-down
 ## Тесты
 
 ```bash
-make test        # 56 тестов backend: API, пайплайн, RBAC, безопасность, экспорт, LLM-fallback
+make test        # 63 теста backend: API, пайплайн, RBAC, безопасность, экспорт, LLM-fallback, поиск, лимиты
 cd frontend && npx tsc --noEmit && npm run build
 ```
 
@@ -259,7 +277,7 @@ AI/context/        спецификация проекта
 - Лимит 50 МБ на файл; имена файлов очищаются; хранилище не отдаёт файлы без проверки прав.
 - Журнал аудита: вход, загрузка, верификация, экспорт, административные действия.
 - Перед использованием вне лаборатории: смените `SECRET_KEY` и пароль демо-пользователя, включите HTTPS на reverse-proxy,
-  ограничьте доступ к портам 8000 / 9001 сетью.
+  ограничьте доступ к порту 9001 (MinIO) сетью.
 
 ---
 
@@ -276,7 +294,8 @@ AI/context/        спецификация проекта
 | §10 Безопасность: bcrypt, JWT, RBAC, presigned 15 мин, лимит 50 МБ | ✅ / ⚠️ | Для MinIO — presigned-ссылки с TTL 15 мин. В локальном режиме файлы отдаёт API с проверкой прав, без presigned-ссылок |
 | §10 python-magic | ⚠️ | Сигнатуры проверяются собственным кодом, без системной библиотеки libmagic |
 | §13 Метрики CER/WER, F1 | ✅ / ⚠️ | Измерено на демо-датасете, не на реальных сканах |
-| §13 Время на страницу < 5–8 с на GPU, поиск < 200 мс на 1000+ док. | ⚠️ | На CPU fallback ~0.3 с на документ. GPU-замеры и выборка 1000+ документов — на целевом сервере |
+| §13 Поиск < 200 мс на 1000+ док. | ✅ | Измерено: p95 8–34 мс на 1000 документах (PostgreSQL и SQLite), `make search-bench` |
+| §13 Время на страницу < 5–8 с на GPU | ⚠️ | На CPU fallback ~0.3 с на документ. GPU-замер с bge-m3 и Qwen — на целевом сервере |
 
 Что **не проверено** в среде разработки: сборка Docker-образов, GPU-профиль, Tesseract на сканах,
 модели Ollama на реальных документах. Первый запуск на целевом оборудовании — за вами.

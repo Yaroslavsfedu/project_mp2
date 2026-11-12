@@ -6,13 +6,16 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import text as sql_text
+import numpy as np
+from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ml_pipeline.text_utils import cosine
-from app.models.document import DocumentChunk
+from app.models.document import Document, DocumentChunk
 
 logger = logging.getLogger(__name__)
 
@@ -102,3 +105,110 @@ def top_chunks_python(chunks: list[DocumentChunk], query_vector: list[float], en
     ]
     scored.sort(key=lambda item: item[1], reverse=True)
     return scored[:limit]
+
+
+# ---------- быстрый косинус для SQLite (без pgvector) ----------
+# Раньше каждый запрос загружал колонку embedding (JSON, 1024 числа на чанк) для всех чанков
+# и парсил её в ORM: на 1000 документов это ~320 мс. Теперь нормализованные вектора
+# хранятся в памяти процесса (float32), а косинус — одно матричное умножение.
+VECTOR_CACHE_LIMIT = 60_000  # чанков; при превышении кэш очищается (≈240 МБ при 1024 измерениях)
+_vector_cache: dict[str, "np.ndarray"] = {}
+_cache_lock = threading.Lock()
+
+
+def _normalize(values: list[float]) -> "np.ndarray | None":
+    arr = np.asarray(values, dtype=np.float32)
+    norm = float(np.linalg.norm(arr))
+    if arr.size == 0 or norm == 0.0:
+        return None
+    return arr / norm
+
+
+async def top_chunks_sqlite(
+    db: AsyncSession,
+    query_vector: list[float],
+    engine: str,
+    *,
+    limit: int,
+    document_id: str | None = None,
+    doc_type: str | None = None,
+    status: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    organization: str | None = None,
+) -> list[ChunkHit]:
+    """Косинус по нормализованным векторам из кэша. Только вектора того же движка."""
+    query = np.asarray(query_vector, dtype=np.float32)
+    qnorm = float(np.linalg.norm(query))
+    if qnorm == 0.0:
+        return []
+    query = query / qnorm
+
+    stmt = (
+        select(
+            DocumentChunk.id,
+            DocumentChunk.document_id,
+            DocumentChunk.page_number,
+            DocumentChunk.chunk_text,
+            Document.filename,
+            Document.doc_type,
+            Document.status,
+        )
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(DocumentChunk.embedding_model == engine)
+    )
+    if document_id:
+        stmt = stmt.where(DocumentChunk.document_id == document_id)
+    if doc_type:
+        stmt = stmt.where(Document.doc_type == doc_type)
+    if status:
+        stmt = stmt.where(Document.status == status)
+    if date_from:
+        stmt = stmt.where(Document.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(Document.created_at <= date_to)
+    if organization:
+        stmt = stmt.where(DocumentChunk.chunk_text.ilike(f"%{organization}%"))
+    rows = (await db.execute(stmt)).all()
+    if not rows:
+        return []
+
+    # догружаем только вектора, которых нет в кэше
+    missing = [row.id for row in rows if row.id not in _vector_cache]
+    if missing:
+        for start in range(0, len(missing), 500):
+            batch = missing[start:start + 500]
+            vec_rows = await db.execute(
+                select(DocumentChunk.id, DocumentChunk.embedding).where(DocumentChunk.id.in_(batch))
+            )
+            loaded = {chunk_id: _normalize(embedding or []) for chunk_id, embedding in vec_rows.all()}
+            with _cache_lock:
+                if len(_vector_cache) + len(loaded) > VECTOR_CACHE_LIMIT:
+                    _vector_cache.clear()
+                for chunk_id, vec in loaded.items():
+                    if vec is not None:
+                        _vector_cache[chunk_id] = vec
+
+    kept = [row for row in rows if row.id in _vector_cache]
+    if not kept:
+        return []
+    matrix = np.stack([_vector_cache[row.id] for row in kept])
+    scores = matrix @ query
+    order = np.argsort(-scores)[:limit]
+    return [
+        ChunkHit(
+            document_id=kept[i].document_id,
+            filename=kept[i].filename,
+            doc_type=kept[i].doc_type,
+            status=kept[i].status,
+            page_number=kept[i].page_number,
+            chunk_text=kept[i].chunk_text,
+            similarity=float(scores[i]),
+        )
+        for i in order
+    ]
+
+
+def clear_vector_cache() -> None:
+    with _cache_lock:
+        _vector_cache.clear()
