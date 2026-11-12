@@ -1,0 +1,42 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- Данные приложения ----------
+backend/data/
+data/
+*.db
+*.db-journal
+uploads/
+samples/generated/
+
+# ---------- Frontend ----------
+node_modules/
+frontend/dist/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ---------- Окружение ----------
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ---------- IDE / OS ----------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---------- Прочее ----------
+*.log
+.arena/
