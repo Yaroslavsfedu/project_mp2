@@ -143,13 +143,12 @@ FK_EXPORT int64_t fk_topk_hamming(const uint64_t *sigs, int64_t n, int64_t words
             }
         }
     }
-    /* сортировка результата по возрастанию (distance, idx) — простая пузырьковая для k ≤ 4096 */
-    for (int64_t i = 1; i < size; i++) {
-        int32_t cd = hd[i]; int64_t ci = hi[i]; int64_t j = i - 1;
-        while (j >= 0 && (hd[j] > cd || (hd[j] == cd && hi[j] > ci))) {
-            hd[j + 1] = hd[j]; hi[j + 1] = hi[j]; j--;
-        }
-        hd[j + 1] = cd; hi[j + 1] = ci;
+    /* Сортировка результата по возрастанию (distance, idx): heap-sort на той же max-куче, O(k log k).
+     * (Раньше здесь была сортировка вставками O(k²): при IVF она вызывается nprobe раз на запрос.) */
+    for (int64_t end = size - 1; end > 0; end--) {
+        int32_t td = hd[0]; hd[0] = hd[end]; hd[end] = td;
+        int64_t ti = hi[0]; hi[0] = hi[end]; hi[end] = ti;
+        heap_sift_down(hd, hi, end, 0);
     }
     for (int64_t i = 0; i < size; i++) {
         out_idx[i] = hi[i];

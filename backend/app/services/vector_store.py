@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import heapq
+import asyncio
 import json
 import logging
 import threading
@@ -357,6 +358,9 @@ async def sync_mmap_index(db: AsyncSession, engine: str) -> MmapVectorIndex:
             index.append(ids, np.stack(vectors), cursor=last)
         else:
             index.append([], None, cursor=last)
+    if index.ivf_needs_build(settings.IVF_MIN_VECTORS, settings.IVF_REBUILD_RATIO):
+        # перестройка тяжёлая (K-Means + переукладка файлов), поэтому не блокирует event loop
+        await asyncio.to_thread(index.build_ivf, settings.IVF_CLUSTERS)
     return index
 
 
@@ -383,7 +387,7 @@ async def top_chunks_mmap(
         return []
     filtered = any([document_id, doc_type, status, date_from, date_to, organization])
     want = limit * (10 if filtered else 1)
-    candidates = index.search(query, want, settings.VECTOR_INDEX_RERANK_FACTOR)
+    candidates = index.search(query, want, settings.VECTOR_INDEX_RERANK_FACTOR, nprobe=settings.IVF_NPROBE)
     if not candidates:
         return []
     score_by_id = {c.chunk_id: c.score for c in candidates}

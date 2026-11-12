@@ -99,7 +99,13 @@ class Settings(BaseSettings):
     # auto — mmap, когда чанков больше VECTOR_CACHE_LIMIT; mmap_binary — всегда mmap; float — всегда кэш в RAM.
     VECTOR_INDEX_MODE: str = "auto"
     # Сколько кандидатов по Хэммингу доранжировать int8 относительно top-k (чем больше, тем точнее и медленнее).
-    VECTOR_INDEX_RERANK_FACTOR: int = 20
+    VECTOR_INDEX_RERANK_FACTOR: int = 100  # при 20 recall@10 на кластерном 1M-корпусе был 0.59, при 100 — 0.995
+    # IVF (кластерный индекс mmap): число кластеров, сколько ближайших просматривать, порог включения
+    # и доля «дельты» (новых строк вне кластеров), после которой индекс перестраивается.
+    IVF_CLUSTERS: int = 256
+    IVF_NPROBE: int = 8
+    IVF_MIN_VECTORS: int = 20_000
+    IVF_REBUILD_RATIO: float = 0.3
     # FTS5 для полнотекстового поиска на SQLite (при недоступности FTS5 — прежний LIKE).
     SQLITE_FTS5: bool = True
     # Очередь Celery, за которой следит bulk_ingest (backpressure)
