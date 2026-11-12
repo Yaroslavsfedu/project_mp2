@@ -1,0 +1,655 @@
+{
+  "generated_at": "2026-11-12T19:10:55",
+  "documents": 6,
+  "metrics": {
+    "cer": 0.0002,
+    "wer": 0.0019,
+    "ner_precision": 0.9796,
+    "ner_recall": 1.0,
+    "ner_f1": 0.9897,
+    "doc_type_accuracy": 1.0,
+    "avg_duration_sec": 0.184
+  },
+  "entities": {
+    "precision": 0.9796,
+    "recall": 1.0,
+    "f1": 0.9897,
+    "true_positives": 48,
+    "false_positives": 1,
+    "false_negatives": 0,
+    "per_field": {
+      "persons": {
+        "precision": 0.9,
+        "recall": 1.0,
+        "f1": 0.9474,
+        "tp": 9,
+        "fp": 1,
+        "fn": 0
+      },
+      "organizations": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0
+      },
+      "dates": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 10,
+        "fp": 0,
+        "fn": 0
+      },
+      "amounts": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0
+      },
+      "inn_ogrn": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 10,
+        "fp": 0,
+        "fn": 0
+      },
+      "addresses": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 4,
+        "fp": 0,
+        "fn": 0
+      },
+      "document_number": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 4,
+        "fp": 0,
+        "fn": 0
+      }
+    }
+  },
+  "per_document": [
+    {
+      "filename": "dogovor_postavki_47-2024.pdf",
+      "status": "completed",
+      "error": null,
+      "pages": 2,
+      "duration_sec": 0.185,
+      "cer": 0.0,
+      "wer": 0.0,
+      "doc_type_expected": "Договор",
+      "doc_type_predicted": "Договор",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецовой Анны Сергеевны",
+          "Семенов В. Е.",
+          "Кузнецова А. С."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "12 марта 2024 г",
+          "09.01.2024",
+          "26 апреля 2024 г"
+        ],
+        "amounts": [
+          "1 250 000 руб. 00 коп."
+        ],
+        "inn_ogrn": [
+          "ИНН 6165048312",
+          "КПП 616501001",
+          "ОГРН 1156196048721",
+          "р/с 40702810400000012345",
+          "ИНН 6166052167",
+          "КПП 616601001",
+          "ОГРН 1026102997202"
+        ],
+        "document_number": "47/2024",
+        "addresses": [
+          "344002, г. Ростов-на-Дону, пр. Будённовский, д. 21, офис 4",
+          "344006, г. Ростов-на-Дону, ул. Большая Садовая, д. 105/42",
+          "г. Ростов-на-Дону, ул. Чехова, д. 2, корпус «Б», ауд. 209"
+        ]
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецовой Анны Сергеевны",
+          "Семенов В. Е.",
+          "Кузнецова А. С."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "09.01.2024",
+          "12 марта 2024 г.",
+          "26 апреля 2024 г."
+        ],
+        "amounts": [
+          "1 250 000 руб. 00 коп."
+        ],
+        "inn_ogrn": [
+          "ИНН 6165048312",
+          "ИНН 6166052167",
+          "КПП 616501001",
+          "КПП 616601001",
+          "ОГРН 1156196048721",
+          "ОГРН 1026102997202",
+          "р/с 40702810400000012345"
+        ],
+        "document_number": "47/2024",
+        "addresses": [
+          "г. Ростов-на-Дону, ул. Чехова, д. 2, корпус «Б», ауд. 209"
+        ]
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    },
+    {
+      "filename": "prikaz_112-OD.pdf",
+      "status": "completed",
+      "error": null,
+      "pages": 1,
+      "duration_sec": 0.118,
+      "cer": 0.0,
+      "wer": 0.0,
+      "doc_type_expected": "Приказ",
+      "doc_type_predicted": "Приказ",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецова Анна Сергеевна",
+          "Гончаров Дмитрий Петрович",
+          "Ковалёва Елена Игоревна",
+          "Боровская М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "12 февраля 2024 г",
+          "12.02.2024",
+          "30.06.2024"
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": "112-ОД",
+        "addresses": [
+          "г. Ростов-на-Дону"
+        ]
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецова Анна Сергеевна",
+          "Гончаров Дмитрий Петрович",
+          "Ковалёва Елена Игоревна",
+          "Боровская М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "12.02.2024",
+          "30.06.2024",
+          "12 февраля 2024 г."
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": "112-ОД",
+        "addresses": [
+          "г. Ростов-на-Дону"
+        ]
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    },
+    {
+      "filename": "schet_208.pdf",
+      "status": "completed",
+      "error": null,
+      "pages": 1,
+      "duration_sec": 0.109,
+      "cer": 0.0,
+      "wer": 0.0,
+      "doc_type_expected": "Счет",
+      "doc_type_predicted": "Счет",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенов В. Е."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»",
+          "ПАО «Сбербанк»"
+        ],
+        "dates": [
+          "15 марта 2024 г",
+          "30 марта 2024 г"
+        ],
+        "amounts": [
+          "89 000 руб",
+          "890 000 руб",
+          "28 000 руб",
+          "280 000 руб",
+          "40 000 руб",
+          "80 000 руб",
+          "1 250 000 руб. 00 коп.",
+          "208 333 руб. 33 коп."
+        ],
+        "inn_ogrn": [
+          "ИНН 6165048312",
+          "КПП 616501001",
+          "ИНН 6166052167",
+          "КПП 616601001",
+          "Расчётный счёт 40702810400000012345",
+          "БИК 046015001",
+          "к/с 30101810600000000002"
+        ],
+        "document_number": "208",
+        "addresses": [
+          "344002, г. Ростов-на-Дону, пр. Будённовский, д. 21, офис 4",
+          "344006, г. Ростов-на-Дону, ул. Большая Садовая, д. 105/42"
+        ]
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенов В. Е."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»",
+          "ПАО «Сбербанк»"
+        ],
+        "dates": [
+          "15 марта 2024 г.",
+          "30 марта 2024 г."
+        ],
+        "amounts": [
+          "89 000 руб.",
+          "890 000 руб.",
+          "28 000 руб.",
+          "280 000 руб.",
+          "40 000 руб.",
+          "80 000 руб.",
+          "1 250 000 руб. 00 коп.",
+          "208 333 руб. 33 коп."
+        ],
+        "inn_ogrn": [
+          "ИНН 6165048312",
+          "ИНН 6166052167",
+          "КПП 616501001",
+          "КПП 616601001",
+          "Расчётный счёт 40702810400000012345",
+          "БИК 046015001",
+          "к/с 30101810600000000002"
+        ],
+        "document_number": "208",
+        "addresses": [
+          "г. Ростов-на-Дону, пр. Будённовский, д. 21, офис 4",
+          "г. Ростов-на-Дону, ул. Большая Садовая, д. 105/42"
+        ]
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    },
+    {
+      "filename": "akt_15.pdf",
+      "status": "completed",
+      "error": null,
+      "pages": 1,
+      "duration_sec": 0.109,
+      "cer": 0.0,
+      "wer": 0.0,
+      "doc_type_expected": "Акт",
+      "doc_type_predicted": "Акт",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенов В. Е.",
+          "Кузнецова А. С."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "18 апреля 2024 г",
+          "15 марта 2024 г"
+        ],
+        "amounts": [
+          "1 250 000 руб. 00 коп."
+        ],
+        "inn_ogrn": [],
+        "document_number": "15",
+        "addresses": []
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенов В. Е.",
+          "Кузнецова А. С."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "18 апреля 2024 г.",
+          "15 марта 2024 г."
+        ],
+        "amounts": [
+          "1 250 000 руб. 00 коп."
+        ],
+        "inn_ogrn": [],
+        "document_number": "15",
+        "addresses": []
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    },
+    {
+      "filename": "nauchnaya_statya_IDP.txt",
+      "status": "completed",
+      "error": null,
+      "pages": 2,
+      "duration_sec": 0.353,
+      "cer": 0.0,
+      "wer": 0.0,
+      "doc_type_expected": "Научная статья",
+      "doc_type_predicted": "Научная статья",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [],
+        "organizations": [],
+        "dates": [],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": null,
+        "addresses": []
+      },
+      "predicted_entities": {
+        "persons": [],
+        "organizations": [],
+        "dates": [],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": null,
+        "addresses": []
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    },
+    {
+      "filename": "sluzhebnaya_zapiska.docx",
+      "status": "completed",
+      "error": null,
+      "pages": 1,
+      "duration_sec": 0.228,
+      "cer": 0.0014,
+      "wer": 0.0111,
+      "doc_type_expected": "Заявление",
+      "doc_type_predicted": "Заявление",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Боровской М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "05 июня 2024 г"
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": null,
+        "addresses": []
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича Дата",
+          "Боровской М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "05 июня 2024 г."
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": null,
+        "addresses": []
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    }
+  ],
+  "skipped": [
+    {
+      "filename": "scan_akt_15.jpg",
+      "reason": "требуется OCR-движок (Tesseract или локальная VLM)"
+    },
+    {
+      "filename": "scan_schet_208.jpg",
+      "reason": "требуется OCR-движок (Tesseract или локальная VLM)"
+    }
+  ],
+  "environment": {
+    "llm_engine": "fallback",
+    "llm_model": "qwen2.5:7b-instruct",
+    "llm_available": false,
+    "embedding_engine": "fallback",
+    "ocr_engine": "none",
+    "tesseract_available": false,
+    "dataset": "samples/ground_truth.json",
+    "python": "3.11.2"
+  },
+  "worst_documents": [
+    {
+      "filename": "sluzhebnaya_zapiska.docx",
+      "status": "completed",
+      "error": null,
+      "pages": 1,
+      "duration_sec": 0.228,
+      "cer": 0.0014,
+      "wer": 0.0111,
+      "doc_type_expected": "Заявление",
+      "doc_type_predicted": "Заявление",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Боровской М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "05 июня 2024 г"
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": null,
+        "addresses": []
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича Дата",
+          "Боровской М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "05 июня 2024 г."
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": null,
+        "addresses": []
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    },
+    {
+      "filename": "dogovor_postavki_47-2024.pdf",
+      "status": "completed",
+      "error": null,
+      "pages": 2,
+      "duration_sec": 0.185,
+      "cer": 0.0,
+      "wer": 0.0,
+      "doc_type_expected": "Договор",
+      "doc_type_predicted": "Договор",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецовой Анны Сергеевны",
+          "Семенов В. Е.",
+          "Кузнецова А. С."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "12 марта 2024 г",
+          "09.01.2024",
+          "26 апреля 2024 г"
+        ],
+        "amounts": [
+          "1 250 000 руб. 00 коп."
+        ],
+        "inn_ogrn": [
+          "ИНН 6165048312",
+          "КПП 616501001",
+          "ОГРН 1156196048721",
+          "р/с 40702810400000012345",
+          "ИНН 6166052167",
+          "КПП 616601001",
+          "ОГРН 1026102997202"
+        ],
+        "document_number": "47/2024",
+        "addresses": [
+          "344002, г. Ростов-на-Дону, пр. Будённовский, д. 21, офис 4",
+          "344006, г. Ростов-на-Дону, ул. Большая Садовая, д. 105/42",
+          "г. Ростов-на-Дону, ул. Чехова, д. 2, корпус «Б», ауд. 209"
+        ]
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецовой Анны Сергеевны",
+          "Семенов В. Е.",
+          "Кузнецова А. С."
+        ],
+        "organizations": [
+          "ООО «ТехноСервис»",
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "09.01.2024",
+          "12 марта 2024 г.",
+          "26 апреля 2024 г."
+        ],
+        "amounts": [
+          "1 250 000 руб. 00 коп."
+        ],
+        "inn_ogrn": [
+          "ИНН 6165048312",
+          "ИНН 6166052167",
+          "КПП 616501001",
+          "КПП 616601001",
+          "ОГРН 1156196048721",
+          "ОГРН 1026102997202",
+          "р/с 40702810400000012345"
+        ],
+        "document_number": "47/2024",
+        "addresses": [
+          "г. Ростов-на-Дону, ул. Чехова, д. 2, корпус «Б», ауд. 209"
+        ]
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    },
+    {
+      "filename": "prikaz_112-OD.pdf",
+      "status": "completed",
+      "error": null,
+      "pages": 1,
+      "duration_sec": 0.118,
+      "cer": 0.0,
+      "wer": 0.0,
+      "doc_type_expected": "Приказ",
+      "doc_type_predicted": "Приказ",
+      "doc_type_correct": true,
+      "reference_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецова Анна Сергеевна",
+          "Гончаров Дмитрий Петрович",
+          "Ковалёва Елена Игоревна",
+          "Боровская М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "12 февраля 2024 г",
+          "12.02.2024",
+          "30.06.2024"
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": "112-ОД",
+        "addresses": [
+          "г. Ростов-на-Дону"
+        ]
+      },
+      "predicted_entities": {
+        "persons": [
+          "Семенова Владимира Евгеньевича",
+          "Кузнецова Анна Сергеевна",
+          "Гончаров Дмитрий Петрович",
+          "Ковалёва Елена Игоревна",
+          "Боровская М. А."
+        ],
+        "organizations": [
+          "ФГБОУ ВО «ЮФУ»"
+        ],
+        "dates": [
+          "12.02.2024",
+          "30.06.2024",
+          "12 февраля 2024 г."
+        ],
+        "amounts": [],
+        "inn_ogrn": [],
+        "document_number": "112-ОД",
+        "addresses": [
+          "г. Ростов-на-Дону"
+        ]
+      },
+      "llm_engine": "fallback",
+      "ocr_source": "native"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   LogOut,
   ScanSearch,
+  Settings2,
   Sparkles,
   Upload,
 } from "lucide-react";
@@ -14,12 +15,16 @@ import { useAuth } from "@/store/auth";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui";
 
-const NAV = [
+type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; end?: boolean };
+
+const NAV: NavItem[] = [
   { to: "/", label: "Рабочий стол", icon: LayoutDashboard, end: true },
   { to: "/documents", label: "Документы", icon: FileSearch },
   { to: "/upload", label: "Загрузка", icon: Upload },
   { to: "/search", label: "Умный поиск", icon: ScanSearch },
 ];
+
+const ADMIN_NAV: NavItem = { to: "/admin", label: "Администрирование", icon: Settings2 };
 
 function BrandMark() {
   return (
@@ -46,7 +51,9 @@ export function AppLayout() {
   });
 
   const llmOnline = status?.llm.available;
-  const ocrOnline = status?.ocr_engine && status.ocr_engine !== "none";
+  const ocrEngine = status?.ocr?.engine ?? "none";
+  const ocrOnline = ocrEngine !== "none";
+  const navItems = user?.role === "admin" ? [...NAV, ADMIN_NAV] : NAV;
 
   return (
     <div className="flex min-h-screen">
@@ -54,7 +61,7 @@ export function AppLayout() {
         <BrandMark />
 
         <nav className="mt-8 flex flex-col gap-1">
-          {NAV.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -84,7 +91,15 @@ export function AppLayout() {
             <div className="flex items-center justify-between gap-2">
               <span className="text-slate-400">OCR</span>
               <Badge tone={ocrOnline ? "brand" : "muted"} className="text-[10px]">
-                {ocrOnline ? status?.ocr_engine : "без OCR"}
+                {ocrOnline ? ocrEngine : "без OCR"}
+              </Badge>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-400">GPU</span>
+              <Badge tone={status?.gpu?.available ? "brand" : "muted"} className="text-[10px]">
+                {status?.gpu?.available
+                  ? `${((status.gpu.memory_mb ?? 0) / 1024).toFixed(0)} ГБ`
+                  : "CPU"}
               </Badge>
             </div>
             <div className="flex items-center justify-between gap-2">
@@ -126,7 +141,7 @@ export function AppLayout() {
         <header className="sticky top-0 z-30 flex items-center justify-between gap-4 border-b border-white/[0.06] bg-ink-950/80 px-4 py-3 backdrop-blur lg:hidden">
           <BrandMark />
           <div className="flex items-center gap-2">
-            {NAV.map((item) => (
+            {navItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

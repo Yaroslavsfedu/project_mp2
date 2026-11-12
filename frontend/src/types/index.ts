@@ -120,14 +120,100 @@ export interface SystemStatus {
     url: string;
     model: string;
     embedding_model: string;
+    vision_model?: string;
     available: boolean;
     mode: string;
+    installed_models?: string[];
+    model_installed?: boolean;
+    embedding_model_installed?: boolean;
+    vision_model_installed?: boolean;
   };
-  ocr_engine: string;
+  ocr: {
+    engine: string;
+    configured: string;
+    languages: string;
+    tesseract_installed: boolean;
+    preprocess_enabled: boolean;
+  };
+  gpu: {
+    available: boolean;
+    name?: string;
+    memory_mb?: number;
+    driver?: string;
+    recommended_llm?: string;
+    recommended_vision?: string;
+    reason?: string;
+  };
+  cpu: { cores: number; note?: string };
   storage_backend: string;
   queue_backend: string;
-  preprocess_enabled: boolean;
   max_upload_mb: number;
+  hints: string[];
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  full_name: string;
+  role: "admin" | "operator" | "viewer";
+  is_active: boolean;
+  created_at: string;
+  documents_count: number;
+}
+
+export interface AuditEntry {
+  id: string;
+  user_email: string;
+  action: string;
+  document_id: string | null;
+  document_name: string;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AdminOverview {
+  users_total: number;
+  documents_total: number;
+  pages_total: number;
+  verified_total: number;
+  storage_bytes: number;
+  audit_events: number;
+  actions_24h: { action: string; count: number }[];
+}
+
+export interface QualityMetrics {
+  cer: number;
+  wer: number;
+  ner_precision: number;
+  ner_recall: number;
+  ner_f1: number;
+  doc_type_accuracy: number;
+  avg_duration_sec: number;
+}
+
+export interface QualityDocumentRow {
+  filename: string;
+  status: string;
+  error: string | null;
+  pages: number;
+  duration_sec: number;
+  cer: number;
+  wer: number;
+  doc_type_expected: string;
+  doc_type_predicted: string;
+  doc_type_correct: boolean;
+  llm_engine: string;
+  ocr_source: string;
+}
+
+export interface QualityReport {
+  generated_at: string;
+  documents: number;
+  metrics: QualityMetrics;
+  per_document: QualityDocumentRow[];
+  skipped: { filename: string; reason: string }[];
+  environment: Record<string, unknown>;
+  worst_documents?: QualityDocumentRow[];
 }
 
 export const DOC_TYPES = [

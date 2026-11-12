@@ -52,7 +52,13 @@ async def seed_demo_data() -> None:
         from scripts.generate_samples import generate_samples
 
         SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-        files = generate_samples(SAMPLES_DIR)
+        files = [
+            path
+            for path in generate_samples(SAMPLES_DIR)
+            # сканы (scan_*) требуют OCR-движка, а ground_truth.json — не документ
+            if path.suffix.lower() in {".pdf", ".docx", ".txt", ".md"}
+            and not path.name.startswith("scan_")
+        ]
         if not files:
             return
 

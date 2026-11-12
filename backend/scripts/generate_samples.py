@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 import fitz
 from docx import Document as DocxDocument
+from PIL import Image, ImageDraw, ImageFilter
 
 FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -244,6 +246,230 @@ def build_docx(path: Path) -> Path:
     return path
 
 
+# ---------------------------------------------------------------------------
+# Эталонная разметка для оценки качества (scripts/evaluate.py).
+# Сущности приведены в той форме, в которой они присутствуют в документе.
+# ---------------------------------------------------------------------------
+GROUND_TRUTH: dict[str, dict] = {
+    "dogovor_postavki_47-2024.pdf": {
+        "doc_type": "Договор",
+        "entities": {
+            "persons": [
+                "Семенова Владимира Евгеньевича",
+                "Кузнецовой Анны Сергеевны",
+                "Семенов В. Е.",
+                "Кузнецова А. С.",
+            ],
+            "organizations": ["ООО «ТехноСервис»", "ФГБОУ ВО «ЮФУ»"],
+            "dates": ["12 марта 2024 г", "09.01.2024", "26 апреля 2024 г"],
+            "amounts": ["1 250 000 руб. 00 коп."],
+            "inn_ogrn": [
+                "ИНН 6165048312",
+                "КПП 616501001",
+                "ОГРН 1156196048721",
+                "р/с 40702810400000012345",
+                "ИНН 6166052167",
+                "КПП 616601001",
+                "ОГРН 1026102997202",
+            ],
+            "document_number": "47/2024",
+            "addresses": [
+                "344002, г. Ростов-на-Дону, пр. Будённовский, д. 21, офис 4",
+                "344006, г. Ростов-на-Дону, ул. Большая Садовая, д. 105/42",
+                "г. Ростов-на-Дону, ул. Чехова, д. 2, корпус «Б», ауд. 209",
+            ],
+        },
+    },
+    "prikaz_112-OD.pdf": {
+        "doc_type": "Приказ",
+        "entities": {
+            "persons": [
+                "Семенова Владимира Евгеньевича",
+                "Кузнецова Анна Сергеевна",
+                "Гончаров Дмитрий Петрович",
+                "Ковалёва Елена Игоревна",
+                "Боровская М. А.",
+            ],
+            "organizations": ["ФГБОУ ВО «ЮФУ»"],
+            "dates": ["12 февраля 2024 г", "12.02.2024", "30.06.2024"],
+            "amounts": [],
+            "inn_ogrn": [],
+            "document_number": "112-ОД",
+            "addresses": ["г. Ростов-на-Дону"],
+        },
+    },
+    "schet_208.pdf": {
+        "doc_type": "Счет",
+        "entities": {
+            "persons": ["Семенов В. Е."],
+            "organizations": ["ООО «ТехноСервис»", "ФГБОУ ВО «ЮФУ»", "ПАО «Сбербанк»"],
+            "dates": ["15 марта 2024 г", "30 марта 2024 г"],
+            "amounts": [
+                "89 000 руб",
+                "890 000 руб",
+                "28 000 руб",
+                "280 000 руб",
+                "40 000 руб",
+                "80 000 руб",
+                "1 250 000 руб. 00 коп.",
+                "208 333 руб. 33 коп.",
+            ],
+            "inn_ogrn": [
+                "ИНН 6165048312",
+                "КПП 616501001",
+                "ИНН 6166052167",
+                "КПП 616601001",
+                "Расчётный счёт 40702810400000012345",
+                "БИК 046015001",
+                "к/с 30101810600000000002",
+            ],
+            "document_number": "208",
+            "addresses": [
+                "344002, г. Ростов-на-Дону, пр. Будённовский, д. 21, офис 4",
+                "344006, г. Ростов-на-Дону, ул. Большая Садовая, д. 105/42",
+            ],
+        },
+    },
+    "akt_15.pdf": {
+        "doc_type": "Акт",
+        "entities": {
+            "persons": ["Семенов В. Е.", "Кузнецова А. С."],
+            "organizations": ["ООО «ТехноСервис»", "ФГБОУ ВО «ЮФУ»"],
+            "dates": ["18 апреля 2024 г", "15 марта 2024 г"],
+            "amounts": ["1 250 000 руб. 00 коп."],
+            "inn_ogrn": [],
+            "document_number": "15",
+            "addresses": [],
+        },
+    },
+    "nauchnaya_statya_IDP.txt": {
+        "doc_type": "Научная статья",
+        "entities": {
+            "persons": [],
+            "organizations": [],
+            "dates": [],
+            "amounts": [],
+            "inn_ogrn": [],
+            "document_number": None,
+            "addresses": [],
+        },
+    },
+    "sluzhebnaya_zapiska.docx": {
+        "doc_type": "Заявление",
+        "note": "служебная записка; в таксономии ТЗ ближайший класс — «Заявление»",
+        "entities": {
+            "persons": ["Семенова Владимира Евгеньевича", "Боровской М. А."],
+            "organizations": ["ФГБОУ ВО «ЮФУ»"],
+            "dates": ["05 июня 2024 г"],
+            "amounts": [],
+            "inn_ogrn": [],
+            "document_number": None,
+            "addresses": [],
+        },
+    },
+}
+
+
+# Сканы оцениваются отдельно: для их обработки нужен OCR-движок
+# (Tesseract или локальная VLM), поэтому в отчёте они помечаются как requires_ocr.
+GROUND_TRUTH["scan_akt_15.jpg"] = {
+    "doc_type": "Акт",
+    "requires_ocr": True,
+    "entities": GROUND_TRUTH["akt_15.pdf"]["entities"],
+}
+GROUND_TRUTH["scan_schet_208.jpg"] = {
+    "doc_type": "Счет",
+    "requires_ocr": True,
+    "entities": GROUND_TRUTH["schet_208.pdf"]["entities"],
+}
+
+
+def _blocks_text(blocks: list[tuple[str, str]]) -> str:
+    return "\n".join(text for _, text in blocks if text.strip())
+
+
+def _docx_text() -> str:
+    """Текст служебной записки — в том же порядке, в котором его извлекает парсер."""
+    return "\n".join(
+        [
+            "СЛУЖЕБНАЯ ЗАПИСКА",
+            "Кому: ректору ФГБОУ ВО «ЮФУ» Боровской М. А.",
+            "От: руководителя лаборатории ИОД Семенова Владимира Евгеньевича",
+            "Дата: 05 июня 2024 г.",
+            "О внедрении платформы оцифровки документов",
+            "Прошу согласовать запуск в опытную эксплуатацию веб-приложения для оцифровки документов "
+            "и интеллектуальной обработки информации, разработанного проектной командой ИКТИБ.",
+            "Платформа развёрнута в изолированном контуре, использует локальные модели Qwen 2.5 и "
+            "обеспечивает распознавание, классификацию, извлечение сущностей и поиск по архиву документов.",
+            "Приложение: отчёт о тестировании на 4 листах.",
+            "Показатель | Значение",
+            "Обработано документов | 128",
+            "Средняя точность распознавания | 96,4%",
+            "Экономия времени оператора | 72%",
+        ]
+    )
+
+
+TEXTS: dict[str, str] = {
+    "dogovor_postavki_47-2024.pdf": _blocks_text(CONTRACT_BLOCKS),
+    "prikaz_112-OD.pdf": _blocks_text(ORDER_BLOCKS),
+    "schet_208.pdf": _blocks_text(INVOICE_BLOCKS),
+    "akt_15.pdf": _blocks_text(ACT_BLOCKS),
+    "nauchnaya_statya_IDP.txt": ARTICLE_TEXT,
+    "sluzhebnaya_zapiska.docx": _docx_text(),
+    "scan_akt_15.jpg": _blocks_text(ACT_BLOCKS),
+    "scan_schet_208.jpg": _blocks_text(INVOICE_BLOCKS),
+}
+
+
+def build_ground_truth() -> dict:
+    documents = []
+    for filename, meta in GROUND_TRUTH.items():
+        documents.append(
+            {
+                "filename": filename,
+                "doc_type": meta["doc_type"],
+                "text": TEXTS.get(filename, ""),
+                "entities": meta["entities"],
+                **({"note": meta["note"]} if meta.get("note") else {}),
+                **({"requires_ocr": True} if meta.get("requires_ocr") else {}),
+            }
+        )
+    return {
+        "description": "Эталонная разметка демонстрационного датасета IDP (CER/WER/NER F1)",
+        "documents": documents,
+    }
+
+
+def _add_stamp(image: Image.Image) -> Image.Image:
+    """Синтетическая синяя печать — проверка алгоритма удаления печатей."""
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    cx, cy = int(image.width * 0.72), int(image.height * 0.78)
+    radius = int(image.width * 0.11)
+    draw.ellipse(
+        [cx - radius, cy - radius, cx + radius, cy + radius],
+        outline=(40, 60, 200, 120),
+        width=max(int(radius * 0.12), 2),
+    )
+    draw.text((cx - radius // 2, cy - 8), "ЮФУ", fill=(40, 60, 200, 120))
+    return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+
+
+def make_scan_variant(pdf_path: Path, out_path: Path, angle: float = 0.9) -> Path:
+    """Рендерит первую страницу PDF в «фотографию скана»: наклон, шум, печать, JPEG."""
+    with fitz.open(pdf_path) as doc:
+        page = doc[0]
+        pix = page.get_pixmap(dpi=200, alpha=False)
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+    image = image.rotate(angle, expand=True, resample=Image.BICUBIC, fillcolor=(255, 255, 255))
+    image = _add_stamp(image)
+    image = image.filter(ImageFilter.GaussianBlur(radius=0.4))
+    image.save(out_path, format="JPEG", quality=82)
+    return out_path
+
+
 def generate_samples(out_dir: Path | str = "samples", force: bool = False) -> list[Path]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -256,6 +482,7 @@ def generate_samples(out_dir: Path | str = "samples", force: bool = False) -> li
         "sluzhebnaya_zapiska.docx": build_docx,
     }
     created: list[Path] = []
+
     for name, factory in targets.items():
         path = out / name
         if path.exists() and not force:
@@ -266,6 +493,29 @@ def generate_samples(out_dir: Path | str = "samples", force: bool = False) -> li
             created.append(path)
         except Exception as exc:  # noqa: BLE001
             print(f"Не удалось создать {name}: {exc}", file=sys.stderr)
+
+    # синтетические «сканы» создаём после PDF: нужен исходный файл
+    scans = {
+        "scan_akt_15.jpg": "akt_15.pdf",
+        "scan_schet_208.jpg": "schet_208.pdf",
+    }
+    for scan_name, source_name in scans.items():
+        source = out / source_name
+        scan_path = out / scan_name
+        if source.exists() and (force or not scan_path.exists()):
+            try:
+                make_scan_variant(source, scan_path)
+                created.append(scan_path)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Не удалось создать {scan_name}: {exc}", file=sys.stderr)
+        elif scan_path.exists():
+            created.append(scan_path)
+
+    truth_path = out / "ground_truth.json"
+    truth_path.write_text(
+        json.dumps(build_ground_truth(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    created.append(truth_path)
     return created
 
 

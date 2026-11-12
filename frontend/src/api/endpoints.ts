@@ -1,11 +1,15 @@
 import { api, API_PREFIX } from "@/api/client";
 import type {
+  AdminOverview,
+  AdminUser,
+  AuditEntry,
   ChatResponse,
   DashboardStats,
   DocumentDetail,
   DocumentListResponse,
   DocumentSummary,
   Entities,
+  QualityReport,
   SearchResponse,
   SystemStatus,
   User,
@@ -99,6 +103,24 @@ export const systemApi = {
   status: () => api.get<SystemStatus>("/system/status").then((r) => r.data),
   stats: () => api.get<DashboardStats>("/dashboard/stats").then((r) => r.data),
   health: () => api.get("/health").then((r) => r.data),
+};
+
+export const adminApi = {
+  overview: () => api.get<AdminOverview>("/admin/overview").then((r) => r.data),
+  users: () => api.get<AdminUser[]>("/admin/users").then((r) => r.data),
+  updateUser: (id: string, payload: { role?: string; is_active?: boolean; full_name?: string }) =>
+    api.patch<AdminUser>(`/admin/users/${id}`, payload).then((r) => r.data),
+  audit: (params?: { limit?: number; action?: string }) =>
+    api.get<AuditEntry[]>("/admin/audit", { params }).then((r) => r.data),
+  quality: () =>
+    api.get<{ report: QualityReport; markdown: string | null }>("/admin/quality").then((r) => r.data),
+  runQuality: (limit?: number) =>
+    api
+      .post<{ report: QualityReport; markdown: string }>("/admin/quality/run", null, {
+        params: limit ? { limit } : undefined,
+        timeout: 900_000,
+      })
+      .then((r) => r.data),
 };
 
 export async function downloadFile(url: string, filename?: string) {

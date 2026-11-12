@@ -1,25 +1,24 @@
-"""Обёртка над OCR-движками.
+"""Выбор и вызов OCR-движка.
 
-Порядок выбора (OCR_ENGINE=auto):
-1. ``tesseract`` — если в системе доступен бинарник с языками rus+eng;
-2. ``none`` — если OCR недоступен, страница помечается как требующая
-   ручной верификации (в этом режиме приложение остаётся работоспособным:
-   PDF с текстовым слоем и DOCX обрабатываются без OCR).
+Цепочка (OCR_ENGINE=auto):
+1. ``tesseract`` — быстрый CPU-OCR с координатами слов (rus+eng);
+2. ``ollama-vision`` — локальная VLM (qwen2-vl / llava) для сканов и рукописи,
+   когда Tesseract не установлен, а GPU доступна;
+3. ``none`` — страница помечается как требующая OCR (текст и сущности не извлекаются).
 
-Структура класса позволяет подключить PaddleOCR/EasyOCR без изменения
-остального пайплайна — достаточно реализовать ``_run`` и указать движок.
+OCR_ENGINE можно зафиксировать: ``tesseract`` | ``ollama`` | ``native``.
 """
 from __future__ import annotations
 
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-try:  # pragma: no cover
+try:  # pragma: no cover - зависит от окружения
     import pytesseract
     from PIL import Image
 except Exception:  # noqa: BLE001
@@ -36,33 +35,48 @@ class OcrWord:
 
 @dataclass
 class OcrPageResult:
-    words: list[OcrWord]
-    avg_confidence: float
-    engine: str
-
-    @property
-    def text(self) -> str:
-        return " ".join(w.text for w in self.words)
+    words: list[OcrWord] = field(default_factory=list)
+    avg_confidence: float = 0.0
+    engine: str = "none"
+    text: str = ""
+    boxes: list[dict] = field(default_factory=list)
 
 
-def _cppm_available() -> bool:
+def tesseract_available() -> bool:
     return shutil.which("tesseract") is not None and pytesseract is not None
 
 
-def available_engine() -> str:
-    if settings.OCR_ENGINE == "native":
+async def resolve_engine() -> str:
+    """Активный OCR-движок с учётом настроек и доступности моделей."""
+    from app.ml_pipeline.llm_service import vision_available
+
+    configured = settings.OCR_ENGINE.lower()
+    if configured == "native":
         return "native"
-    if settings.OCR_ENGINE == "tesseract":
-        return "tesseract" if _cppm_available() else "none"
-    return "tesseract" if _cppm_available() else "none"
+    if configured == "tesseract":
+        return "tesseract" if tesseract_available() else "none"
+    if configured in ("ollama", "vision", "vlm"):
+        return "ollama-vision" if await vision_available() else "none"
+    # auto
+    if tesseract_available():
+        return "tesseract"
+    if await vision_available():
+        return "ollama-vision"
+    return "none"
+
+
+def available_engine() -> str:
+    """Быстрая синхронная проверка (без обращения к Ollama) — для статуса в API."""
+    if settings.OCR_ENGINE.lower() == "native":
+        return "native"
+    return "tesseract" if tesseract_available() else "none"
 
 
 def recognize_image(image_bytes: bytes) -> OcrPageResult:
-    """Распознаёт изображение (PNG/JPEG-байты) и возвращает слова с боксами."""
-    engine = available_engine()
-    if engine != "tesseract":
-        logger.warning("OCR-движок недоступен: страница будет помечена как требующая OCR")
-        return OcrPageResult(words=[], avg_confidence=0.0, engine="none")
+    """Распознаёт изображение через Tesseract и возвращает слова с боксами."""
+    if not tesseract_available():
+        logger.warning("Tesseract недоступен: страница будет помечена как требующая OCR")
+        return OcrPageResult(engine="none")
 
     import io
 
@@ -88,7 +102,12 @@ def recognize_image(image_bytes: bytes) -> OcrPageResult:
         w, h = float(data["width"][i]), float(data["height"][i])
         words.append(OcrWord(text=text, bbox=[x, y, x + w, y + h], confidence=round(conf / 100, 3)))
 
-    avg = round(sum(w.confidence for w in words) / len(words), 3) if words else 0.0
+    if not words:
+        # иногда Tesseract не отдаёт уровни слов — берём текст страницы
+        raw_text = pytesseract.image_to_string(image, lang=settings.OCR_LANGUAGES).strip()
+        return OcrPageResult(words=[], avg_confidence=0.6 if raw_text else 0.0, engine="tesseract", text=raw_text)
+
+    avg = round(sum(w.confidence for w in words) / len(words), 3)
     return OcrPageResult(words=words, avg_confidence=avg, engine="tesseract")
 
 
@@ -102,3 +121,22 @@ def words_to_boxes(words: list[OcrWord], start_index: int = 0) -> list[dict]:
         }
         for i, w in enumerate(words)
     ]
+
+
+def text_to_line_boxes(text: str) -> list[dict]:
+    """Псевдо-боксы для VLM/текстового OCR: по одной рамке на строку.
+
+    VLM не возвращает координаты, поэтому используется «мягкая» разметка
+    без подсветки на скане, но с сохранением структуры строк.
+    """
+    boxes = []
+    for index, line in enumerate(line for line in text.splitlines() if line.strip()):
+        boxes.append(
+            {
+                "id": f"t{index}",
+                "text": line.strip(),
+                "confidence": 0.0,
+                "bbox": [0, 0, 0, 0],
+            }
+        )
+    return boxes

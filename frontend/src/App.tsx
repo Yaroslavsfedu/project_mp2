@@ -12,6 +12,7 @@ import { DocumentsPage } from "@/pages/DocumentsPage";
 import { UploadPage } from "@/pages/UploadPage";
 import { DocumentViewPage } from "@/pages/DocumentViewPage";
 import { SearchPage } from "@/pages/SearchPage";
+import { AdminPage } from "@/pages/AdminPage";
 
 function GlobalEvents() {
   const queryClient = useQueryClient();
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="upload" element={<UploadPage />} />
             <Route path="documents/:id" element={<DocumentViewPage />} />
             <Route path="search" element={<SearchPage />} />
+            <Route path="admin" element={<AdminPage />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

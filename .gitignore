@@ -37,6 +37,10 @@ dist/
 .DS_Store
 Thumbs.db
 
+# отчёты бенчмарка и нагрузки — генерируются локально
+reports/benchmark.json
+reports/load_test.json
+
 # ---------- Прочее ----------
 *.log
 .arena/

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     MAX_UPLOAD_MB: int = 50
     CORS_ORIGINS: str = "*"
 
+    # Rate limiting (защита от перебора паролей и флуда загрузками)
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
+    RATE_LIMIT_UPLOAD_PER_MINUTE: int = 30
+
     # --- Данные ---
     DATA_DIR: Path = Path("data")
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/idp.db"
