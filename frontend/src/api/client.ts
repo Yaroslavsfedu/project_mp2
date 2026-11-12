@@ -9,7 +9,7 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("idp-token");
+  const token = useAuth.getState().token;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -24,7 +24,7 @@ api.interceptors.response.use(
       // Сбрасываем сессию только если отклонён ТЕКУЩИЙ токен. Запоздалый ответ на запрос со старым
       // токеном не должен выбивать свежий вход. Переход на /login делает защищённый маршрут (без перезагрузки).
       const sentHeader = String(error.config?.headers?.Authorization ?? "");
-      const current = localStorage.getItem("idp-token");
+      const current = useAuth.getState().token;
       if (!isAuthCall && current && sentHeader === `Bearer ${current}`) {
         useAuth.getState().logout();
       }

@@ -1,4 +1,5 @@
 import { api, API_PREFIX } from "@/api/client";
+import { useAuth } from "@/store/auth";
 import type {
   AdminOverview,
   AdminUser,
@@ -124,7 +125,7 @@ export const adminApi = {
 };
 
 export async function downloadFile(url: string, filename?: string) {
-  const token = localStorage.getItem("idp-token");
+  const token = useAuth.getState().token;
   const response = await fetch(url, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
