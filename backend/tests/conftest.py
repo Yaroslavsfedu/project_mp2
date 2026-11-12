@@ -1,6 +1,7 @@
 """Тестовое окружение: изолированная БД и хранилище во временной директории."""
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from pathlib import Path
@@ -24,7 +25,7 @@ os.environ["RATE_LIMIT_BACKEND"] = "memory"
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
-from app.core.database import init_db  # noqa: E402
+from app.core.database import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -36,7 +37,28 @@ def anyio_backend() -> str:
 @pytest.fixture(scope="session", autouse=True)
 async def prepared_database():
     await init_db()
+    # сессионная фикстура работает в своём event loop; соединения, открытые здесь, не должны
+    # переживать его (иначе aiosqlite-потоки пишут в закрытый loop → «Event loop is closed»)
+    await engine.dispose()
     yield
+    await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+async def _dispose_pool_after_test():
+    """Фоновая обработка (загрузка → process_document) и пул создаются в loop текущего теста.
+    Перед закрытием loop отменяем и дожидаемся фоновых задач, затем закрываем пул; иначе aiosqlite-потоки
+    пишут результаты в закрытый loop («Event loop is closed»)."""
+    yield
+    from app.services import pipeline_service
+
+    pending = list(pipeline_service._task_registry.values())
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    pipeline_service._task_registry.clear()
+    await engine.dispose()
 
 
 @pytest.fixture()

@@ -11,6 +11,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.services import vector_store
@@ -257,7 +258,7 @@ async def _vector_fixture(count: int) -> str:
             session.add(
                 DocumentChunk(
                     document_id=doc.id, page_number=1, chunk_index=0, chunk_text=text_value,
-                    embedding=hashing_embedding(text_value), embedding_model="fallback",
+                    embedding=hashing_embedding(text_value, settings.EMBEDDING_DIM), embedding_model="fallback",
                 )
             )
         await session.commit()
@@ -271,7 +272,11 @@ async def test_sqlite_vector_search_lru_and_batches_match_reference(monkeypatch)
     vector_store.clear_vector_cache()
     monkeypatch.setattr(vector_store, "VECTOR_CACHE_LIMIT", 5)
     monkeypatch.setattr(vector_store, "SQLITE_SCAN_BATCH", 3)
-    query = hashing_embedding("договор оплата мониторы")
+    # проверяем именно путь SQLite-батчей с LRU: mmap-индекс даёт приближённые скоры и тестируется отдельно
+    async def _no_mmap(*_args, **_kwargs):
+        return False
+    monkeypatch.setattr(vector_store, "use_mmap_index", _no_mmap)
+    query = hashing_embedding("договор оплата мониторы", settings.EMBEDDING_DIM)
 
     async with SessionLocal() as session:
         hits = await vector_store.top_chunks_sqlite(session, query, "fallback", limit=6, doc_type="LRU")

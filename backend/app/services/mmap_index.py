@@ -142,7 +142,9 @@ class MmapVectorIndex:
         return path.stat().st_size // record_bytes
 
     def _save_meta(self) -> None:
-        tmp = self.meta_path.with_suffix(".tmp")
+        self.dir.mkdir(parents=True, exist_ok=True)
+        # уникальное имя временного файла: два объекта на одном каталоге не должны мешать друг другу
+        tmp = self.dir / f".meta.{os.getpid()}.{threading.get_ident()}.tmp"
         tmp.write_text(
             json.dumps({"version": FORMAT_VERSION, "dim": self.dim, "count": self.count, "cursor": self.cursor,
                         "rerank_bits": self.rerank_bits,
@@ -150,6 +152,18 @@ class MmapVectorIndex:
             encoding="utf-8",
         )
         os.replace(tmp, self.meta_path)
+
+    def _reset_if_removed(self) -> None:
+        """Каталог индекса удалён извне (rebuild другого объекта, очистка данных): строк больше нет.
+        Вызывать под self._lock. Без этого закэшированный объект сообщает строки, которых на диске нет."""
+        if self.count > 0 and not self.meta_path.exists():
+            self.count, self.cursor = 0, 0
+            self.ivf_count, self.ivf_clusters, self._ivf = 0, 0, None
+
+    def check_consistency(self) -> None:
+        """Публичная проверка: вызывать ДО чтения курсора (иначе курсор от удалённого индекса пропустит строки)."""
+        with self._lock:
+            self._reset_if_removed()
 
     def rebuild(self) -> None:
         """Удаляет индекс: следующая дозапись начнёт с нуля."""
@@ -172,6 +186,7 @@ class MmapVectorIndex:
         if not chunk_ids:
             if cursor is not None:
                 with self._lock:
+                    self._reset_if_removed()
                     self.cursor = max(self.cursor, cursor)
                     self._save_meta()
             return
@@ -189,6 +204,7 @@ class MmapVectorIndex:
         if scales is not None:
             payload[SCALE_FILE] = scales
         with self._lock:
+            self._reset_if_removed()
             self.dir.mkdir(parents=True, exist_ok=True)
             # выравниваем файлы по count на случай прерванной прошлой записи
             self._truncate_to(self.count)
@@ -229,6 +245,7 @@ class MmapVectorIndex:
             return []
         # Снимок состояния под блокировкой: файлы и границы кластеров должны относиться к одной перестройке.
         with self._lock:
+            self._reset_if_removed()
             maps = self._maps()
             if maps is None:
                 return []

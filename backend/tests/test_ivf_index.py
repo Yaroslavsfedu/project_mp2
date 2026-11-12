@@ -160,3 +160,21 @@ def test_non_uuid_chunk_id_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="UUID"):
         index.append(["not-a-uuid"], _clustered(1, 1, seed=14))
     assert index.count == 0
+
+
+def test_index_survives_external_directory_removal(tmp_path):
+    """Каталог индекса удалён извне (rebuild другого объекта): закэшированный объект сбрасывается, а не падает."""
+    import shutil
+
+    vecs = _clustered(40, 4, seed=15)
+    index = _index_with(tmp_path, vecs, name="gone")
+    assert index.count == 40
+    shutil.rmtree(tmp_path / "gone")
+    index.check_consistency()  # так делает sync_mmap_index перед чтением курсора
+    assert index.count == 0 and index.cursor == 0
+    assert index.search(vecs[0], 1, rerank_factor=20) == []
+    # запись в удалённый каталог не падает (раньше — FileNotFoundError при записи meta)
+    index.append([_uid(1)], vecs[1:2], cursor=1)
+    assert index.count == 1
+    index.append([_uid(0)], vecs[:1], cursor=1)  # и снова пишется с нуля
+    assert index.search(vecs[0], 1, rerank_factor=20)[0].chunk_id == _uid(0)

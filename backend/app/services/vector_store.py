@@ -327,6 +327,7 @@ async def use_mmap_index(db: AsyncSession, engine: str) -> bool:
 async def sync_mmap_index(db: AsyncSession, engine: str) -> MmapVectorIndex:
     """Дозаписывает в индекс новые чанки (rowid больше курсора). Удалённые остаются и отсеиваются при выборке."""
     index = _get_index(engine)
+    index.check_consistency()  # до чтения курсора: иначе курсор удалённого каталога пропустит строки
     top = int(await db.scalar(sql_text("SELECT COALESCE(MAX(rowid), 0) FROM document_chunks")) or 0)
     if top < index.cursor:
         # строки удалены с конца либо VACUUM перенумеровал rowid — курсор недостоверен, строим заново
