@@ -245,7 +245,10 @@ async def top_chunks_sqlite(
         if missing:
             await _load_vectors(db, missing)
         kept = [(row, _cache_get(row.id)) for row in rows]
-        kept = [(row, vec) for row, vec in kept if vec is not None]
+        # векторы другой размерности (например, старые 512-мерные после смены модели) пропускаем:
+        # иначе np.stack падает на всём батче и поиск отвечает 500
+        dim = query.shape[0]
+        kept = [(row, vec) for row, vec in kept if vec is not None and vec.shape[0] == dim]
         if not kept:
             continue
         scores = np.stack([vec for _, vec in kept]) @ query

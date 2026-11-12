@@ -17,7 +17,7 @@ PROJECT_ROOT = BACKEND_ROOT.parent
 
 
 class Settings(BaseSettings):
-    # .env ищем в корне проекта (там его создаёт install.sh), а не в текущей директории:
+    # .env ищем в корне проекта (там его создаёт scripts/bootstrap.sh), а не в текущей директории:
     # dev-скрипты запускают backend из папки backend/, и без этого .env игнорировался бы
     model_config = SettingsConfigDict(
         env_file=(str(PROJECT_ROOT / ".env"), ".env"), env_file_encoding="utf-8", extra="ignore"
@@ -27,14 +27,13 @@ class Settings(BaseSettings):
     APP_NAME: str = "IDP Платформа — оцифровка документов"
     APP_VERSION: str = "0.1.0"
     API_V1_PREFIX: str = "/api/v1"
-    DEBUG: bool = True
 
     # --- Безопасность ---
     SECRET_KEY: str = "change-me-in-production-3f9a1c7d2b6e4a8f"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
     MAX_UPLOAD_MB: int = 50
-    CORS_ORIGINS: str = "*"
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # Rate limiting (защита от перебора паролей и флуда загрузками)
     RATE_LIMIT_ENABLED: bool = True

@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     if settings.SECRET_KEY.startswith("change-me"):
         logger.warning(
             "SECRET_KEY не задан: используется значение по умолчанию. "
-            "Сгенерируйте свой ключ (scripts/install.sh делает это автоматически)."
+            "Сгенерируйте свой ключ (scripts/bootstrap.sh делает это автоматически)."
         )
     yield
     if listener is not None:

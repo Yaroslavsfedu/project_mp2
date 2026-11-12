@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.http import content_disposition
 from app.core.security import get_current_user
+from app.services.audit_service import log_action
 from app.models.document import Document
 from app.models.user import User
 from app.schemas.document import SearchFilters
@@ -32,6 +33,14 @@ async def export_document(
     )
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Документ не найден")
+    await log_action(
+        db,
+        action="document_exported",
+        user=user,
+        document=document,
+        details={"format": format},
+    )
+    await db.commit()
 
     exporter = export_service.EXPORTERS[format]
     content, media_type, extension = exporter(document)
@@ -66,6 +75,13 @@ async def export_batch(
     documents = list((await db.execute(stmt.order_by(Document.created_at.desc()))).scalars().unique())
     if not documents:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Нет документов для экспорта")
+    await log_action(
+        db,
+        action="documents_exported",
+        user=user,
+        details={"format": format, "count": len(documents)},
+    )
+    await db.commit()
 
     content, media_type, extension = (
         export_service.export_batch_xlsx(documents)

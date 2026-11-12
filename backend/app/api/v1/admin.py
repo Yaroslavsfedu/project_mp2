@@ -27,6 +27,12 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_ROOT = BACKEND_ROOT.parent
 REPORTS_DIR = Path(settings.DATA_DIR).resolve() / "reports" / "quality"
+# отчёт, закоммиченный в репозиторий (reports/quality), виден админке без отдельного прогона
+PROJECT_REPORTS_DIR = PROJECT_ROOT / "reports" / "quality"
+
+
+def _quality_report_dir() -> Path:
+    return REPORTS_DIR if (REPORTS_DIR / "quality.json").exists() else PROJECT_REPORTS_DIR
 
 
 @router.get("/users", response_model=list[UserAdminOut])
@@ -163,13 +169,14 @@ async def overview(
 @router.get("/quality")
 async def get_quality_report(admin: Annotated[User, Depends(require_roles(UserRole.ADMIN))]):
     """Последний отчёт о качестве (CER/WER/F1) из `data/reports/quality`."""
-    report = quality_service.load_report(REPORTS_DIR / "quality.json")
+    report_dir = _quality_report_dir()
+    report = quality_service.load_report(report_dir / "quality.json")
     if report is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             "Отчёт ещё не сформирован. Запустите оценку качества в админ-панели.",
         )
-    markdown_path = REPORTS_DIR / "quality.md"
+    markdown_path = report_dir / "quality.md"
     markdown = markdown_path.read_text(encoding="utf-8") if markdown_path.exists() else None
     return {"report": report, "markdown": markdown}
 

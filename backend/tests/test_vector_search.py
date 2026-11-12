@@ -81,3 +81,28 @@ async def test_other_engine_vectors_are_not_mixed():
 
     assert all(h.chunk_text != text for h in fallback_hits)
     assert [h.chunk_text for h in ollama_hits] == [text]
+
+
+async def test_stale_dimension_vectors_do_not_break_search():
+    """Старые векторы другой размерности (после смены модели) не должны ронять поиск (раньше — 500)."""
+    clear_vector_cache()
+    text = "договор поставки для проверки смешанных размерностей"
+    async with SessionLocal() as session:
+        doc_id = await _make_document(session, [(text, "fallback"), (TEXTS[1], "fallback")])
+        # чанк со старым 512-мерным вектором в той же базе
+        stale = DocumentChunk(
+            document_id=doc_id,
+            page_number=1,
+            chunk_index=99,
+            chunk_text="старый чанк 512 измерений",
+            embedding=hashing_embedding("старый чанк", 512),
+            embedding_model="fallback",
+        )
+        session.add(stale)
+        await session.commit()
+        query = hashing_embedding(text, settings.EMBEDDING_DIM)
+        hits = await top_chunks_sqlite(session, query, "fallback", limit=5, document_id=doc_id)
+
+    assert hits, "поиск должен вернуть корректные чанки"
+    assert hits[0].chunk_text == text
+    assert all(h.chunk_text != "старый чанк 512 измерений" for h in hits)

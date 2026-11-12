@@ -49,7 +49,7 @@ async def system_status(user: Annotated[User, Depends(get_current_user)]):
     if ocr_engine == "none":
         hints.append(
             "OCR-движок не найден: установите Tesseract (`apt install tesseract-ocr tesseract-ocr-rus`) "
-            "или загрузите VLM (`ollama pull llava:7b`) и включите OCR_ENGINE=auto/ollama. "
+            "или загрузите VLM (`ollama pull qwen2-vl:7b`) и включите OCR_ENGINE=auto/ollama. "
             "PDF с текстовым слоем, DOCX и TXT обрабатываются и без OCR."
         )
     if gpu.get("available") and gpu.get("recommended_llm") != llm["model"]:

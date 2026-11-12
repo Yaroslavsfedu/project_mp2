@@ -114,6 +114,12 @@ def to_out(document: Document) -> DocumentOut:
     )
 
 
+def require_writer(user: User) -> None:
+    """Загрузка, верификация, повторная обработка и удаление — только operator и admin."""
+    if user.role == UserRole.VIEWER:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Роль «viewer» не может изменять документы")
+
+
 async def get_document_or_404(db: AsyncSession, document_id: str) -> Document:
     document = await db.scalar(
         select(Document)
@@ -134,6 +140,7 @@ async def upload_documents(
     files: Annotated[list[UploadFile], File(description="Один или несколько документов")],
     _: Annotated[None, Depends(limit_upload)] = None,
 ):
+    require_writer(user)
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Файлы не переданы")
 
@@ -329,8 +336,7 @@ async def verify_document(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    if user.role == UserRole.VIEWER:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Роль «viewer» не может изменять документы")
+    require_writer(user)
     document = await get_document_or_404(db, document_id)
     extracted = document.extracted
     if extracted is None:
@@ -382,6 +388,7 @@ async def reprocess_document(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    require_writer(user)
     document = await get_document_or_404(db, document_id)
     document.status = DocumentStatus.PENDING
     document.progress = 0
@@ -410,6 +417,7 @@ async def delete_document(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    require_writer(user)
     document = await get_document_or_404(db, document_id)
     if user.role != UserRole.ADMIN and document.user_id != user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Удалять чужие документы может только администратор")

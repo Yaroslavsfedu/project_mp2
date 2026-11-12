@@ -104,7 +104,7 @@ say "База данных: миграции Alembic"
 # ---------- 5. Демо-данные ----------
 say "Демо-документы и эталонная разметка (samples/)"
 (cd backend && PYTHONPATH=. "$VENV_PY" -m scripts.generate_samples --out ../samples >/dev/null)
-echo "    samples/: $(find samples -maxdepth 1 -type f | wc -l | tr -d ' ') файлов"
+echo "    samples/: $(find samples -maxdepth 1 -type f \( -name '*.pdf' -o -name '*.docx' -o -name '*.txt' -o -name '*.jpg' \) | wc -l | tr -d ' ') документов, эталон: $([ -f samples/ground_truth.json ] && echo есть || echo нет)"
 
 # ---------- 6. Frontend ----------
 say "Frontend: npm"
