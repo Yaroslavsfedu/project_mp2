@@ -41,6 +41,7 @@ from app.models.document import Document, DocumentStatus  # noqa: E402
 from app.models.user import User, UserRole  # noqa: E402
 from app.services.pipeline_service import process_document  # noqa: E402
 from app.services.storage_service import original_key, storage  # noqa: E402
+from app.core.profiling import start_recording, stop_recording  # noqa: E402
 
 BENCH_TEXT = (
     "ДОГОВОР ПОСТАВКИ № 47/2024. г. Ростов-на-Дону, 12 марта 2024 г. "
@@ -85,9 +86,13 @@ async def run_document(path: Path, user: User) -> dict:
         )
         await session.commit()
 
+    recorder = start_recording()
     started = time.perf_counter()
-    await process_document(document_id)
-    duration = time.perf_counter() - started
+    try:
+        await process_document(document_id)
+    finally:
+        duration = time.perf_counter() - started
+        stop_recording()
 
     async with SessionLocal() as session:
         document = await session.scalar(select(Document).where(Document.id == document_id))
@@ -97,6 +102,7 @@ async def run_document(path: Path, user: User) -> dict:
             "pages": document.page_count if document else 0,
             "status": document.status if document else "unknown",
             "duration_sec": round(duration, 3),
+            "stages_sec": {k: round(v, 4) for k, v in sorted(recorder.items())},
         }
 
 
@@ -168,6 +174,20 @@ async def main() -> int:
         )
 
     total = sum(row["duration_sec"] for row in rows)
+    stage_totals: dict[str, float] = {}
+    for row in rows:
+        for name, value in row.get("stages_sec", {}).items():
+            stage_totals[name] = stage_totals.get(name, 0.0) + value
+    top_level = sum(v for k, v in stage_totals.items() if "/" not in k)
+    stage_report = {
+        "per_document_avg_sec": {
+            k: round(v / len(rows), 4) for k, v in sorted(stage_totals.items(), key=lambda kv: -kv[1])
+        },
+        "top_level_tracked_sec": round(top_level, 3),
+        "untracked_sec": round(total - top_level, 3),
+        "untracked_share": round((total - top_level) / total, 3) if total else None,
+        "note": "имена с '/' — вложенные стадии внутри верхнего уровня; в сумму не входят",
+    }
     pages = sum(row["pages"] for row in rows)
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -184,6 +204,7 @@ async def main() -> int:
             "embedding": [round(t, 3) for t in embed_times],
         },
         "documents": rows,
+        "stages": stage_report,
         "summary": {
             "documents": len(rows),
             "pages": pages,

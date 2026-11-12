@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
 
+from app.core.profiling import stage
+
 logger = logging.getLogger(__name__)
 
 # Минимальный объём «осмысленного» текста на странице, при котором
@@ -55,10 +57,12 @@ def extract_pdf(path: str, dpi: int = 150) -> list[PageData]:
     pages: list[PageData] = []
     with fitz.open(path) as doc:
         for index, page in enumerate(doc, start=1):
-            png, width, height = render_page_png(page, dpi=dpi)
+            with stage("extract_pages/pdf_render_png"):
+                png, width, height = render_page_png(page, dpi=dpi)
             scale = width / page.rect.width if page.rect.width else 1.0
-            words = _page_words(page)
-            text = page.get_text("text").strip()
+            with stage("extract_pages/pdf_words"):
+                words = _page_words(page)
+                text = page.get_text("text").strip()
             is_native = len(text) >= NATIVE_TEXT_MIN_CHARS
             scaled_words = [
                 {

@@ -14,6 +14,8 @@ import logging
 
 import numpy as np
 
+from app.core.profiling import stage
+
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - зависит от окружения
@@ -141,14 +143,20 @@ def prepare_page(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
         meta["engine"] = "opencv-not-installed"
         return image, image, meta
 
-    cleaned = remove_stamps(image)
-    meta["stamps_removed"] = bool(np.any(cleaned != image))
-    gray = _to_gray(cleaned)
-    angle = detect_skew_angle(gray)
+    with stage("extract_pages/preprocess/stamps"):
+        cleaned = remove_stamps(image)
+        meta["stamps_removed"] = bool(np.any(cleaned != image))
+    with stage("extract_pages/preprocess/skew_detect"):
+        gray = _to_gray(cleaned)
+        angle = detect_skew_angle(gray)
     meta["skew_angle"] = round(angle, 2)
 
-    display = deskew_with_angle(image, angle)
-    ocr_input = denoise_and_binarize(deskew_with_angle(gray, angle))
+    with stage("extract_pages/preprocess/deskew_display"):
+        display = deskew_with_angle(image, angle)
+    with stage("extract_pages/preprocess/deskew_gray"):
+        gray_rot = deskew_with_angle(gray, angle)
+    with stage("extract_pages/preprocess/denoise_binarize"):
+        ocr_input = denoise_and_binarize(gray_rot)
     meta["binarized"] = True
     meta["engine"] = "opencv"
     return ocr_input, display, meta

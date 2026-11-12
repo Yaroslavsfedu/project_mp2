@@ -83,7 +83,7 @@ def render_text_pages(text: str) -> list[RenderedPage]:
                 lines.append({"text": line, "bbox": [MARGIN, y - 4, PAGE_WIDTH - MARGIN, y + LINE_HEIGHT - 6], "words": words})
             y += LINE_HEIGHT
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG", optimize=True)
+        image.save(buffer, format="PNG")  # без optimize=True: ~4x быстрее, размер +~3%
         pages.append(
             RenderedPage(png_bytes=buffer.getvalue(), width=PAGE_WIDTH, height=height, lines=lines)
         )

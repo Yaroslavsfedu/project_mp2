@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import statistics
 import subprocess
+import uuid
 import sys
 import time
 from pathlib import Path
@@ -84,7 +85,7 @@ def synthetic_texts(n: int, start: int, words_per_doc: int = 40) -> list[str]:
 
 
 def doc_id(i: int) -> str:
-    return f"{i:036d}"  # фиксированные 36 символов, как UUID в индексе
+    return str(uuid.UUID(int=i))  # UUID: ids.bin хранит 16 байт (формат v4)
 
 
 # ------------------------------------------------------------------ этап 1: хэширование
@@ -246,7 +247,7 @@ def worker_mmap(base: Path, n: int, limit: int, k: int = 10) -> dict:
         t0 = time.perf_counter()
         cands = index.search(q, k, 20)
         latencies.append((time.perf_counter() - t0) * 1000)
-        tops.append([int(c.chunk_id) for c in cands])
+        tops.append([uuid.UUID(c.chunk_id).int for c in cands])
     return {"latencies_ms": latencies, "tops": tops, "rss_mb": _rss_mb(), "memory": _mem_breakdown(),
             "mode": "mmap 1-bit POPCNT + int8 rerank"}
 

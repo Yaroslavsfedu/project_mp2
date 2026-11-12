@@ -1,0 +1,207 @@
+{
+  "generated_at": "2026-11-12T22:18:38",
+  "environment": {
+    "llm_mode": "fallback",
+    "llm_model": "qwen2.5:7b-instruct",
+    "embedding_model": "bge-m3",
+    "ocr_engine": "none",
+    "gpu": {
+      "available": false,
+      "reason": "nvidia-smi не найден"
+    },
+    "cpu": {
+      "cores": 2,
+      "note": "CPU-режим: рекомендуется qwen2.5:3b-instruct или 1.5b"
+    }
+  },
+  "components_sec": {
+    "llm_analyze": [
+      0.001,
+      0.0,
+      0.0
+    ],
+    "embedding": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "documents": [
+    {
+      "filename": "akt_15.pdf",
+      "size_kb": 73.2,
+      "pages": 1,
+      "status": "completed",
+      "duration_sec": 0.117,
+      "stages_sec": {
+        "chunking": 0.0,
+        "db_chunks": 0.0049,
+        "db_clear_old": 0.0032,
+        "db_entities": 0.0024,
+        "db_ocr_page": 0.0047,
+        "db_status": 0.0358,
+        "embed": 0.0006,
+        "extract_pages": 0.048,
+        "extract_pages/pdf": 0.0476,
+        "extract_pages/pdf_render_png": 0.0449,
+        "extract_pages/pdf_words": 0.0013,
+        "llm_analyze": 0.0005,
+        "llm_correct": 0.0001,
+        "pg_vectors": 0.0001,
+        "storage_put_page": 0.0004
+      }
+    },
+    {
+      "filename": "dogovor_postavki_47-2024.pdf",
+      "size_kb": 84.0,
+      "pages": 2,
+      "status": "completed",
+      "duration_sec": 0.176,
+      "stages_sec": {
+        "chunking": 0.0,
+        "db_chunks": 0.006,
+        "db_clear_old": 0.0032,
+        "db_entities": 0.0029,
+        "db_ocr_page": 0.0091,
+        "db_status": 0.034,
+        "embed": 0.0018,
+        "extract_pages": 0.0997,
+        "extract_pages/pdf": 0.0988,
+        "extract_pages/pdf_render_png": 0.093,
+        "extract_pages/pdf_words": 0.0039,
+        "llm_analyze": 0.0013,
+        "llm_correct": 0.0002,
+        "pg_vectors": 0.0001,
+        "storage_put_page": 0.0008
+      }
+    },
+    {
+      "filename": "nauchnaya_statya_IDP.txt",
+      "size_kb": 2.8,
+      "pages": 2,
+      "status": "completed",
+      "duration_sec": 0.16,
+      "stages_sec": {
+        "chunking": 0.0,
+        "db_chunks": 0.0056,
+        "db_clear_old": 0.003,
+        "db_entities": 0.0024,
+        "db_ocr_page": 0.009,
+        "db_status": 0.0325,
+        "embed": 0.0018,
+        "extract_pages": 0.0887,
+        "extract_pages/text_render": 0.0878,
+        "extract_pages/txt_read": 0.0001,
+        "llm_analyze": 0.0007,
+        "llm_correct": 0.0002,
+        "pg_vectors": 0.0001,
+        "storage_put_page": 0.0006
+      }
+    },
+    {
+      "filename": "prikaz_112-OD.pdf",
+      "size_kb": 73.3,
+      "pages": 1,
+      "status": "completed",
+      "duration_sec": 0.118,
+      "stages_sec": {
+        "chunking": 0.0,
+        "db_chunks": 0.0048,
+        "db_clear_old": 0.0038,
+        "db_entities": 0.0025,
+        "db_ocr_page": 0.0044,
+        "db_status": 0.036,
+        "embed": 0.0006,
+        "extract_pages": 0.0474,
+        "extract_pages/pdf": 0.047,
+        "extract_pages/pdf_render_png": 0.0441,
+        "extract_pages/pdf_words": 0.0015,
+        "llm_analyze": 0.0008,
+        "llm_correct": 0.0001,
+        "pg_vectors": 0.0001,
+        "storage_put_page": 0.0003
+      }
+    },
+    {
+      "filename": "schet_208.pdf",
+      "size_kb": 77.9,
+      "pages": 1,
+      "status": "completed",
+      "duration_sec": 0.118,
+      "stages_sec": {
+        "chunking": 0.0,
+        "db_chunks": 0.0048,
+        "db_clear_old": 0.0031,
+        "db_entities": 0.0027,
+        "db_ocr_page": 0.0044,
+        "db_status": 0.0348,
+        "embed": 0.0006,
+        "extract_pages": 0.0499,
+        "extract_pages/pdf": 0.0494,
+        "extract_pages/pdf_render_png": 0.0466,
+        "extract_pages/pdf_words": 0.0015,
+        "llm_analyze": 0.0007,
+        "llm_correct": 0.0001,
+        "pg_vectors": 0.0001,
+        "storage_put_page": 0.0003
+      }
+    },
+    {
+      "filename": "sluzhebnaya_zapiska.docx",
+      "size_kb": 36.6,
+      "pages": 1,
+      "status": "completed",
+      "duration_sec": 0.131,
+      "stages_sec": {
+        "chunking": 0.0,
+        "db_chunks": 0.0059,
+        "db_clear_old": 0.0034,
+        "db_entities": 0.002,
+        "db_ocr_page": 0.0047,
+        "db_status": 0.0437,
+        "embed": 0.0009,
+        "extract_pages": 0.0521,
+        "extract_pages/docx_read": 0.0068,
+        "extract_pages/text_render": 0.0449,
+        "llm_analyze": 0.0006,
+        "llm_correct": 0.0001,
+        "pg_vectors": 0.0001,
+        "storage_put_page": 0.0004
+      }
+    }
+  ],
+  "stages": {
+    "per_document_avg_sec": {
+      "extract_pages": 0.0643,
+      "extract_pages/pdf": 0.0405,
+      "extract_pages/pdf_render_png": 0.0381,
+      "db_status": 0.0361,
+      "extract_pages/text_render": 0.0221,
+      "db_ocr_page": 0.0061,
+      "db_chunks": 0.0053,
+      "db_clear_old": 0.0033,
+      "db_entities": 0.0025,
+      "extract_pages/pdf_words": 0.0014,
+      "extract_pages/docx_read": 0.0011,
+      "embed": 0.001,
+      "llm_analyze": 0.0008,
+      "storage_put_page": 0.0005,
+      "llm_correct": 0.0001,
+      "pg_vectors": 0.0001,
+      "extract_pages/txt_read": 0.0,
+      "chunking": 0.0
+    },
+    "top_level_tracked_sec": 0.721,
+    "untracked_sec": 0.099,
+    "untracked_share": 0.121,
+    "note": "имена с '/' — вложенные стадии внутри верхнего уровня; в сумму не входят"
+  },
+  "summary": {
+    "documents": 6,
+    "pages": 8,
+    "total_sec": 0.82,
+    "avg_sec_per_document": 0.14,
+    "avg_sec_per_page": 0.1,
+    "docs_per_minute": 439.0
+  }
+}

@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.core.profiling import stage
 from app.ml_pipeline import pdf_handler, renderer
 from app.ml_pipeline.llm_service import (
     analyze_document,
@@ -112,7 +113,8 @@ async def _extract_pages(document: Document) -> list[dict]:
     pages: list[dict] = []
 
     if suffix == ".pdf":
-        raw_pages = await asyncio.to_thread(pdf_handler.extract_pdf, path, settings.OCR_DPI)
+        with stage("extract_pages/pdf"):
+            raw_pages = await asyncio.to_thread(pdf_handler.extract_pdf, path, settings.OCR_DPI)
         if not raw_pages:
             raise ValueError("Не удалось прочитать PDF: документ пуст")
         for raw in raw_pages:
@@ -137,10 +139,12 @@ async def _extract_pages(document: Document) -> list[dict]:
         return pages
 
     if suffix == ".docx":
-        text = await asyncio.to_thread(_read_docx_text, path)
+        with stage("extract_pages/docx_read"):
+            text = await asyncio.to_thread(_read_docx_text, path)
         if not text.strip():
             raise ValueError("DOCX не содержит текста")
-        rendered = await asyncio.to_thread(renderer.render_text_pages, text)
+        with stage("extract_pages/text_render"):
+            rendered = await asyncio.to_thread(renderer.render_text_pages, text)
         for index, page in enumerate(rendered, start=1):
             words: list[dict] = []
             for line in page.lines:
@@ -161,8 +165,10 @@ async def _extract_pages(document: Document) -> list[dict]:
         return pages
 
     if suffix in TEXT_EXT:
-        text = Path(path).read_text(encoding="utf-8", errors="ignore")
-        rendered = await asyncio.to_thread(renderer.render_text_pages, text)
+        with stage("extract_pages/txt_read"):
+            text = Path(path).read_text(encoding="utf-8", errors="ignore")
+        with stage("extract_pages/text_render"):
+            rendered = await asyncio.to_thread(renderer.render_text_pages, text)
         for index, page in enumerate(rendered, start=1):
             words = [{**w, "confidence": 0.99} for line in page.lines for w in line["words"]]
             pages.append(
@@ -180,13 +186,14 @@ async def _extract_pages(document: Document) -> list[dict]:
         return pages
 
     # изображения (сканы/фото); многостраничный TIFF обрабатываем постранично
-    data = await storage.get(document.s3_key_original)
+    with stage("extract_pages/image_read"):
+        data = await storage.get(document.s3_key_original)
     import io
 
     from PIL import Image
 
     pngs: list[bytes] = []
-    with Image.open(io.BytesIO(data)) as image:
+    with stage("extract_pages/image_png"), Image.open(io.BytesIO(data)) as image:
         for index in range(getattr(image, "n_frames", 1)):
             image.seek(index)
             pngs.append(_to_png(image))
@@ -242,28 +249,35 @@ async def _ocr_page(number: int, png: bytes, width: int, height: int) -> dict:
             Image.fromarray(array).save(buffer, format="PNG")
             return buffer.getvalue()
 
-        with Image.open(io.BytesIO(png)) as source:
+        with stage("extract_pages/ocr/decode"), Image.open(io.BytesIO(png)) as source:
             rgb = source.convert("RGB")
 
         orientation = 0
         if settings.PREPROCESS_ENABLED:
-            orientation = detect_orientation(rgb)
+            with stage("extract_pages/ocr/orientation"):
+                orientation = detect_orientation(rgb)
             if orientation:
                 # PIL поворачивает против часовой стрелки; OSD сообщает угол коррекции по часовой
                 rgb = rgb.rotate(-orientation, expand=True)
         array = np.array(rgb)
 
         if settings.PREPROCESS_ENABLED:
-            ocr_input, display, meta = prepare_page(array)
+            with stage("extract_pages/ocr/preprocess"):
+                ocr_input, display, meta = prepare_page(array)
         else:
             ocr_input, display, meta = array, array, {}
         meta["orientation"] = orientation
 
-        result = recognize_image(to_png(ocr_input))
+        with stage("extract_pages/ocr/png_encode"):
+            ocr_png = to_png(ocr_input)
+        with stage("extract_pages/ocr/recognize"):
+            result = recognize_image(ocr_png)
         display_height, display_width = display.shape[:2]
+        with stage("extract_pages/ocr/png_encode"):
+            display_png = to_png(display)
         return {
             "number": number,
-            "png": to_png(display),
+            "png": display_png,
             "width": display_width,
             "height": display_height,
             "text": result.text,
@@ -283,6 +297,11 @@ async def _ocr_page(number: int, png: bytes, width: int, height: int) -> dict:
 
 
 async def _set_status(document_id: str, status: str, progress: int, error: str | None = None) -> Document | None:
+    with stage("db_status"):
+        return await _set_status_impl(document_id, status, progress, error)
+
+
+async def _set_status_impl(document_id: str, status: str, progress: int, error: str | None = None) -> Document | None:
     async with SessionLocal() as session:
         document = await session.get(Document, document_id)
         if document is None:
@@ -290,8 +309,7 @@ async def _set_status(document_id: str, status: str, progress: int, error: str |
         document.status = status
         document.progress = progress
         document.error_message = error
-        await session.commit()
-        await session.refresh(document)
+        await session.commit()  # expire_on_commit=False: атрибуты уже актуальны, отдельный SELECT не нужен
         await publish_status(document, status, progress, error)
         return document
 
@@ -309,7 +327,8 @@ async def process_document(document_id: str) -> None:
         await _set_status(document_id, DocumentStatus.OCR_PROCESSING, 10)
 
         # 1. Извлечение страниц (нативный слой / OCR)
-        pages = await _extract_pages(document)
+        with stage("extract_pages"):
+            pages = await _extract_pages(document)
         await _set_status(document_id, DocumentStatus.OCR_PROCESSING, 45)
 
         async with SessionLocal() as session:
@@ -321,15 +340,16 @@ async def process_document(document_id: str) -> None:
                 mimetypes.guess_type(filename)[0] or "application/octet-stream"
             )
             # очищаем предыдущие результаты (reprocess)
-            existing = await session.execute(select(OcrPage).where(OcrPage.document_id == document_id))
-            for page in existing.scalars():
-                await session.delete(page)
-            existing_chunks = await session.execute(
-                select(DocumentChunk).where(DocumentChunk.document_id == document_id)
-            )
-            for chunk in existing_chunks.scalars():
-                await session.delete(chunk)
-            await session.commit()
+            with stage("db_clear_old"):
+                existing = await session.execute(select(OcrPage).where(OcrPage.document_id == document_id))
+                for page in existing.scalars():
+                    await session.delete(page)
+                existing_chunks = await session.execute(
+                    select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+                )
+                for chunk in existing_chunks.scalars():
+                    await session.delete(chunk)
+                await session.commit()
 
         # 2. Пост-OCR коррекция каждой страницы локальной LLM (с откатом на правила)
         await _set_status(document_id, DocumentStatus.LLM_PROCESSING, 50)
@@ -337,15 +357,18 @@ async def process_document(document_id: str) -> None:
         correction_engines: set[str] = set()
         for page in pages:
             image_key = page_image_key(document_id, page["number"])
-            await storage.put(image_key, page["png"])
+            with stage("storage_put_page"):
+                await storage.put(image_key, page["png"])
             raw = normalize_text(page["text"])
             if raw:
-                corrected, engine_name = await correct_page_text(raw)
+                with stage("llm_correct"):
+                    corrected, engine_name = await correct_page_text(raw)
                 correction_engines.add(engine_name)
             else:
                 corrected = ""
             corrected_pages.append(corrected)
             async with SessionLocal() as session:
+              with stage("db_ocr_page"):
                 session.add(
                     OcrPage(
                         document_id=document_id,
@@ -373,9 +396,10 @@ async def process_document(document_id: str) -> None:
 
         # 3. Локальный ИИ: классификация, NER, резюме, строгий JSON
         await _set_status(document_id, DocumentStatus.LLM_PROCESSING, 65)
-        outcome = await analyze_document(
-            recognized_text, page_hint=f"Документ: {filename}, страниц: {len(pages)}"
-        )
+        with stage("llm_analyze"):
+            outcome = await analyze_document(
+                recognized_text, page_hint=f"Документ: {filename}, страниц: {len(pages)}"
+            )
         result = outcome.result
 
         async with SessionLocal() as session:
@@ -393,7 +417,8 @@ async def process_document(document_id: str) -> None:
             extracted.entities = result.entities.model_dump()
             extracted.keywords = result.keywords
             extracted.engine = outcome.engine
-            await session.commit()
+            with stage("db_entities"):
+                await session.commit()
 
         # 4. Индексация: чанки + эмбеддинги (pgvector в PostgreSQL)
         await _set_status(document_id, DocumentStatus.LLM_PROCESSING, 85)
@@ -403,15 +428,18 @@ async def process_document(document_id: str) -> None:
             )
             rows = list(page_rows.scalars())
         pairs: list[tuple[int, int, str]] = []
-        for row in rows:
-            page_text = row.corrected_text or row.raw_text
-            for index, chunk in enumerate(chunk_text(page_text)):
-                pairs.append((row.page_number, index, chunk))
+        with stage("chunking"):
+            for row in rows:
+                page_text = row.corrected_text or row.raw_text
+                for index, chunk in enumerate(chunk_text(page_text)):
+                    pairs.append((row.page_number, index, chunk))
         if not pairs:
             pairs = [(1, 0, recognized_text[:900])]
 
-        vectors, embed_engine = await embed_texts([chunk for _, _, chunk in pairs])
+        with stage("embed"):
+            vectors, embed_engine = await embed_texts([chunk for _, _, chunk in pairs])
         async with SessionLocal() as session:
+          with stage("db_chunks"):
             vector_rows: list[tuple[str, list[float]]] = []
             for (page_number, index, chunk), vector in zip(pairs, vectors, strict=True):
                 chunk_id = new_uuid()
@@ -430,8 +458,10 @@ async def process_document(document_id: str) -> None:
                 )
                 vector_rows.append((chunk_id, vector))
             await session.commit()
-            await save_pg_vectors(session, vector_rows)
-            await session.commit()
+        async with SessionLocal() as session:
+            with stage("pg_vectors"):
+                await save_pg_vectors(session, vector_rows)
+                await session.commit()
         logger.info(
             "Документ %s: коррекция=%s, эмбеддинги=%s",
             document_id, "/".join(sorted(correction_engines)), embed_engine,

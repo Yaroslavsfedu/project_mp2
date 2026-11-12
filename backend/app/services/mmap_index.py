@@ -7,7 +7,7 @@
 * доранжирование, один из двух вариантов (``rerank_bits``):
   - ``int8.bin``  — единичный вектор int8, 1024 Б на 1024 измерения (rerank_bits = 8);
   - ``int4.bin``  — 4-битные полубайты, 512 Б, + ``scale.f32`` (масштаб строки, 4 Б) (rerank_bits = 4);
-* ``ids.bin``   — UUID чанка, 36 Б (связь с таблицей document_chunks).
+* ``ids.bin``   — UUID чанка в бинарном виде, 16 Б (связь с таблицей document_chunks; строка восстанавливается при выборке).
 
 IVF. ``build_ivf`` обучает сферический K-Means (K ≈ 256) на подвыборке, назначает строки ближайшему центроиду
 и ПЕРЕУКЛАДЫВАЕТ файлы так, что векторы одного кластера лежат подряд (``offsets.i64`` — границы,
@@ -24,6 +24,7 @@ import mmap as mmap_module
 import os
 import shutil
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,14 +39,23 @@ INT8_FILE = "int8.bin"
 INT4_FILE = "int4.bin"
 SCALE_FILE = "scale.f32"
 IDS_FILE = "ids.bin"
-ID_BYTES = 36
+ID_BYTES = 16  # бинарный UUID (v4): вместо 36-символьной строки экономит 20 Б на чанк (~400 МБ на 20M)
 CENTROIDS_FILE = "centroids.f32"
 OFFSETS_FILE = "offsets.i64"
-FORMAT_VERSION = 3  # v3: SimHash через FWHT-вращение (v2 — плотная проекция, несовместима → переиндексация).
+FORMAT_VERSION = 4  # v4: ids.bin — 16-байтные UUID (v3 — строки по 36 Б, несовместимы → переиндексация).
+#                    v3: SimHash через FWHT-вращение (v2 — плотная проекция, несовместима → переиндексация).
 #                    IVF-поля и поля rerank в meta необязательны: отсутствующие значат «нет IVF» и int8.
 IVF_BLOCK = 8192  # строк за раз при назначении кластеров и переукладке (ограничение RAM)
 KMEANS_SAMPLE = 20_000
 KMEANS_ITERS = 8
+
+
+def _uuid_bytes(chunk_id: str) -> bytes:
+    """16 байт UUID для записи в ids.bin; нестроковый UUID — явная ошибка, а не тихая порча."""
+    try:
+        return uuid.UUID(chunk_id).bytes
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"chunk_id должен быть UUID, получено {chunk_id!r}") from exc
 
 
 @dataclass
@@ -174,8 +184,7 @@ class MmapVectorIndex:
             rerank, scales = self.kernels.quantize_i4_batch(vecs)
         else:
             rerank, scales = self.kernels.quantize_unit_i8_batch(vecs), None
-        ids = np.array([cid.encode("ascii").ljust(ID_BYTES, b" ")[:ID_BYTES] for cid in chunk_ids],
-                       dtype=f"S{ID_BYTES}")
+        ids = np.frombuffer(b"".join(_uuid_bytes(cid) for cid in chunk_ids), dtype=np.uint8).reshape(len(chunk_ids), ID_BYTES)
         payload = {SIGNS_FILE: signs, self._rerank_file: rerank, IDS_FILE: ids}
         if scales is not None:
             payload[SCALE_FILE] = scales
@@ -210,7 +219,7 @@ class MmapVectorIndex:
         else:
             rerank = np.memmap(self.dir / INT8_FILE, dtype=np.int8, mode="r", shape=(self.count, self.dim))
             scales = None
-        ids = np.memmap(self.dir / IDS_FILE, dtype=f"S{ID_BYTES}", mode="r", shape=(self.count,))
+        ids = np.memmap(self.dir / IDS_FILE, dtype=np.uint8, mode="r", shape=(self.count, ID_BYTES))
         return signs, rerank, ids, scales
 
     def search(self, query: np.ndarray, k: int, rerank_factor: int, nprobe: int = 16, *,
@@ -251,7 +260,7 @@ class MmapVectorIndex:
         order = np.argsort(-scores, kind="stable")[:k]
         out: list[Candidate] = []
         for pos in order:
-            raw = bytes(ids[int(all_idx[pos])]).rstrip(b" ").decode("ascii")
+            raw = str(uuid.UUID(bytes=bytes(ids[int(all_idx[pos])])))
             out.append(Candidate(chunk_id=raw, score=float(scores[pos])))
         return out
 

@@ -202,7 +202,7 @@ def test_mmap_index_recovers_from_truncated_files(tmp_path):
     index.append(ids, vecs, cursor=50)
     # имитация прерванной записи: ids.bin короче остальных
     with open(tmp_path / "trunc" / mmap_index.IDS_FILE, "r+b") as f:
-        f.truncate(36 * 40)
+        f.truncate(mmap_index.ID_BYTES * 40)
     again = MmapVectorIndex(tmp_path / "trunc", 128)
     assert again.count == 40  # берём минимум по файлам, не падаем
     assert again.search(vecs[3], 1, 20)[0].chunk_id == ids[3]

@@ -25,6 +25,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -167,7 +168,7 @@ def worker_search(args: argparse.Namespace) -> dict:
         for pass_no in (1, 2):
             for q in range(len(qvecs)):
                 t0 = time.perf_counter()
-                got = [int(c.chunk_id) for c in idx.search(qvecs[q], TOP, rr, nprobe=8, early_words=early)]
+                got = [uuid.UUID(c.chunk_id).int for c in idx.search(qvecs[q], TOP, rr, nprobe=8, early_words=early)]
                 ms = (time.perf_counter() - t0) * 1000
                 if pass_no == 1:
                     lat.append(ms)
@@ -305,9 +306,9 @@ def budget_2m(linear_scan_ms_per_million: float | None, bytes_per_vector: dict) 
         "int4_gb": round(vectors * DIM // 2 / gb, 2),
         "int8_gb": round(vectors * DIM / gb, 2),
         "scales_gb": round(vectors * 4 / gb, 3),
-        "ids_gb": round(vectors * 36 / gb, 2),
-        "index_disk_int4_gb": round(vectors * (128 + 512 + 36 + 4) / gb, 1),
-        "index_disk_int8_gb": round(vectors * (128 + 1024 + 36) / gb, 1),
+        "ids_gb": round(vectors * 16 / gb, 2),
+        "index_disk_int4_gb": round(vectors * (128 + 512 + 16 + 4) / gb, 1),
+        "index_disk_int8_gb": round(vectors * (128 + 1024 + 16) / gb, 1),
         "ivf_probe_fraction_nprobe8_of_256": round(8 / 256, 4),
         "ivf_rows_scanned_per_query": int(vectors * 8 / 256),
         "ivf_signs_read_per_query_mb": round(vectors * 8 / 256 * 128 / 1e6, 1),

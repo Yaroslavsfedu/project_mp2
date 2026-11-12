@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import uuid
+
 import numpy as np
 import pytest
 
@@ -15,6 +17,15 @@ from app.native.loader import HASH_MD5, HASH_WYHASH, FastKernels, _fwht_numpy, g
 K = get_kernels()
 NATIVE_ONLY = pytest.mark.skipif(not K.native, reason="нативная библиотека недоступна")
 
+
+
+def _uid(i: int) -> str:
+    """Детерминированный UUID строки i: ids.bin хранит 16-байтные UUID (формат v4)."""
+    return str(uuid.UUID(int=i + 1))
+
+
+def _num(chunk_id: str) -> int:
+    return uuid.UUID(chunk_id).int - 1
 
 def _unit(x: np.ndarray) -> np.ndarray:
     return (x / np.linalg.norm(x, axis=-1, keepdims=True)).astype(np.float32)
@@ -287,7 +298,7 @@ def test_int4_index_finds_self_and_trades_recall_for_memory(tmp_path, dim):
     v = _unit(v)
     i4 = MmapVectorIndex(tmp_path / "i4", dim, rerank_bits=4)
     i8 = MmapVectorIndex(tmp_path / "i8", dim, rerank_bits=8)
-    ids = [f"c{i:05d}" for i in range(1500)]
+    ids = [_uid(i) for i in range(1500)]
     i4.append(ids, v)
     i8.append(ids, v)
     assert (tmp_path / "i4" / "int4.bin").stat().st_size == 1500 * (dim // 2)
@@ -298,8 +309,8 @@ def test_int4_index_finds_self_and_trades_recall_for_memory(tmp_path, dim):
     for qi in range(0, 1500, 150):
         scores = v @ v[qi]
         kth = np.sort(scores)[::-1][9]
-        top4 = [int(c.chunk_id[1:]) for c in i4.search(v[qi], 10, 100)]
-        top8 = [int(c.chunk_id[1:]) for c in i8.search(v[qi], 10, 100)]
+        top4 = [_num(c.chunk_id) for c in i4.search(v[qi], 10, 100)]
+        top8 = [_num(c.chunk_id) for c in i8.search(v[qi], 10, 100)]
         assert top4[0] == qi
         t4.append(sum(scores[j] >= kth - 0.01 for j in top4) / 10)
         t8.append(sum(scores[j] >= kth - 0.01 for j in top8) / 10)
@@ -314,11 +325,11 @@ def test_int4_index_with_ivf(tmp_path):
     centers = rng.standard_normal((16, 512)).astype(np.float32)
     v = _unit(centers[rng.integers(0, 16, size=2400)] + rng.standard_normal((2400, 512)).astype(np.float32) * 0.5)
     index = MmapVectorIndex(tmp_path / "ivf4", 512, rerank_bits=4)
-    index.append([f"c{i:05d}" for i in range(2400)], v)
+    index.append([_uid(i) for i in range(2400)], v)
     assert index.build_ivf(clusters=16)["built"]
     again = MmapVectorIndex(tmp_path / "ivf4", 512, rerank_bits=4)
     assert again.ivf_count == 2400
-    assert again.search(v[77], 1, 100, nprobe=8)[0].chunk_id == "c00077"
+    assert again.search(v[77], 1, 100, nprobe=8)[0].chunk_id == _uid(77)
 
 
 def test_switching_rerank_bits_rebuilds_index(tmp_path):
@@ -326,7 +337,7 @@ def test_switching_rerank_bits_rebuilds_index(tmp_path):
 
     rng = np.random.default_rng(6)
     v = _unit(rng.standard_normal((50, 256)).astype(np.float32))
-    MmapVectorIndex(tmp_path / "sw", 256, rerank_bits=8).append([f"x{i}" for i in range(50)], v)
+    MmapVectorIndex(tmp_path / "sw", 256, rerank_bits=8).append([_uid(i) for i in range(50)], v)
     other = MmapVectorIndex(tmp_path / "sw", 256, rerank_bits=4)
     assert other.count == 0  # другой способ хранения — индекс несовместим, перестраивается из таблицы
 
