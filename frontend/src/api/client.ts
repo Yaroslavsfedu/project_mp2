@@ -1,4 +1,5 @@
 import axios from "axios";
+import { useAuth } from "@/store/auth";
 
 export const API_PREFIX = "/api/v1";
 
@@ -20,11 +21,12 @@ api.interceptors.response.use(
   (error) => {
     if (error?.response?.status === 401) {
       const isAuthCall = String(error.config?.url ?? "").includes("/auth/");
-      if (!isAuthCall) {
-        localStorage.removeItem("idp-token");
-        if (!window.location.pathname.startsWith("/login")) {
-          window.location.href = "/login";
-        }
+      // Сбрасываем сессию только если отклонён ТЕКУЩИЙ токен. Запоздалый ответ на запрос со старым
+      // токеном не должен выбивать свежий вход. Переход на /login делает защищённый маршрут (без перезагрузки).
+      const sentHeader = String(error.config?.headers?.Authorization ?? "");
+      const current = localStorage.getItem("idp-token");
+      if (!isAuthCall && current && sentHeader === `Bearer ${current}`) {
+        useAuth.getState().logout();
       }
     }
     return Promise.reject(error);
