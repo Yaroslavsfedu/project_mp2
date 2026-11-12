@@ -1,0 +1,209 @@
+{
+  "generated_at": "2026-11-12T20:38:02",
+  "environment": {
+    "python": "3.11.2",
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "cpu_count": 2,
+    "avx2": true,
+    "popcnt": true,
+    "ram_total_mb": 3939.9,
+    "note": "песочница: 2 vCPU, ~3.9 ГБ RAM; целевой класс — ноутбук 2 ядра / 4–8 ГБ"
+  },
+  "hashing": {
+    "docs": 3000,
+    "words_per_doc": 40,
+    "python_docs_per_s": 2711.6,
+    "c_docs_per_s": 33582.6,
+    "speedup": 12.38,
+    "max_abs_diff_vs_python": 4.991888999938965e-06,
+    "backend": "c-avx2",
+    "note": "синтетические документы по 40 слов (~250 символов); для чанков по 900 символов ускорение выше"
+  },
+  "vectors": [
+    {
+      "documents": 100000,
+      "chunks": 100000,
+      "build": {
+        "documents": 100000,
+        "build_seconds": 7.0,
+        "float32_bytes": 409600000,
+        "mmap_index_bytes": 118800000,
+        "signs_bytes": 12800000,
+        "int8_bytes": 102400000,
+        "ids_bytes": 3600000,
+        "base_dir": "/tmp/idp-ultra/n100000"
+      },
+      "standard_float32": {
+        "mode": "float32 in RAM",
+        "p50_ms": 13.87,
+        "p95_ms": 23.35,
+        "rss_mb": 419.7,
+        "memory": {
+          "peak_mb": 419.7,
+          "heap_anon_mb": 405.5,
+          "mapped_file_mb": 14.2
+        },
+        "ram_needed_mb_if_loaded": 390.6
+      },
+      "ultra_mmap_binary": {
+        "mode": "mmap 1-bit POPCNT + int8 rerank",
+        "p50_ms": 2.74,
+        "p95_ms": 3.17,
+        "rss_mb": 54.5,
+        "memory": {
+          "peak_mb": 54.5,
+          "heap_anon_mb": 15.8,
+          "mapped_file_mb": 14.0
+        },
+        "signs_mb": 12.2,
+        "int8_mb_on_disk": 97.7
+      },
+      "recall_at_10_vs_float32": 0.95,
+      "recall_min": 0.9,
+      "queries": 30
+    },
+    {
+      "documents": 1000000,
+      "chunks": 1000000,
+      "build": {
+        "documents": 1000000,
+        "build_seconds": 70.6,
+        "float32_bytes": 4096000000,
+        "mmap_index_bytes": 1188000000,
+        "signs_bytes": 128000000,
+        "int8_bytes": 1024000000,
+        "ids_bytes": 36000000,
+        "base_dir": "/tmp/idp-ultra/n1000000"
+      },
+      "standard_float32": {
+        "mode": "float32 memmap (потоковый перебор)",
+        "p50_ms": 6503.59,
+        "p95_ms": 6563.91,
+        "rss_mb": 1995.6,
+        "memory": {
+          "peak_mb": 1995.6,
+          "heap_anon_mb": 14.9,
+          "mapped_file_mb": 1938.5
+        },
+        "ram_needed_mb_if_loaded": 3906.2
+      },
+      "ultra_mmap_binary": {
+        "mode": "mmap 1-bit POPCNT + int8 rerank",
+        "p50_ms": 50.48,
+        "p95_ms": 57.44,
+        "rss_mb": 164.4,
+        "memory": {
+          "peak_mb": 164.4,
+          "heap_anon_mb": 15.8,
+          "mapped_file_mb": 14.1
+        },
+        "signs_mb": 122.1,
+        "int8_mb_on_disk": 976.6
+      },
+      "recall_at_10_vs_float32": 0.925,
+      "recall_min": 0.9,
+      "queries": 8
+    }
+  ],
+  "fts_sqlite": {
+    "chunks": 100000,
+    "fts5_available": true,
+    "terms": {
+      "00ct": {
+        "like_p50_ms": 0.15,
+        "like_p95_ms": 0.2,
+        "like_hits": 300,
+        "fts5_p50_ms": 111.32,
+        "fts5_p95_ms": 118.4,
+        "fts5_hits": 300
+      },
+      "0уtгjн0w": {
+        "like_p50_ms": 5.3,
+        "like_p95_ms": 6.38,
+        "like_hits": 300,
+        "fts5_p50_ms": 13.44,
+        "fts5_p95_ms": 16.54,
+        "fts5_hits": 300
+      },
+      "6vkbлfжn9": {
+        "like_p50_ms": 19.53,
+        "like_p95_ms": 22.65,
+        "like_hits": 300,
+        "fts5_p50_ms": 6.55,
+        "fts5_p95_ms": 7.34,
+        "fts5_hits": 300
+      },
+      "oоч87х": {
+        "like_p50_ms": 27.77,
+        "like_p95_ms": 34.65,
+        "like_hits": 300,
+        "fts5_p50_ms": 6.06,
+        "fts5_p95_ms": 6.3,
+        "fts5_hits": 300
+      },
+      "о7rtqu": {
+        "like_p50_ms": 130.35,
+        "like_p95_ms": 142.6,
+        "like_hits": 300,
+        "fts5_p50_ms": 6.19,
+        "fts5_p95_ms": 7.21,
+        "fts5_hits": 300
+      }
+    },
+    "like_worst_p95_ms": 142.6,
+    "fts5_worst_p95_ms": 118.4,
+    "note": "LIKE ищет подстроку по всему тексту (как прежний путь); FTS5 — токены по префиксу стема"
+  },
+  "budget_2m": {
+    "documents": 2000000,
+    "chunks_per_document": 10,
+    "vectors": 20000000,
+    "sign_index_gb": 2.38,
+    "sign_index_gb_decimal": 2.56,
+    "int8_on_disk_gb": 19.1,
+    "ids_gb": 0.67,
+    "hnsw_float32_gb_for_reference": 148.0,
+    "ram_for_signs_if_fully_cached_gb": 2.38,
+    "process_rss_target_gb": 0.5,
+    "scan_seconds_per_query_estimate": 1.01,
+    "measured_bytes_per_vector_sign": 128.0,
+    "measured_bytes_per_vector_int8": 1024.0,
+    "notes": [
+      "RAM: сигнатуры 2.4 ГБ читаются из страничного кэша ОС; ядро может их вытеснить, процесс не держит копию.",
+      "int8 (20 ГБ на диске) трогается только для кандидатов доранжирования: сотни строк на запрос.",
+      "Полный POPCNT-скан читает все сигнатуры на каждый запрос: время растёт линейно с числом векторов.",
+      "Оценка времени — линейная экстраполяция по измеренному скану; на 2M без индекса по кластерам поиск может не уложиться в 200 мс на 2 ядрах."
+    ]
+  },
+  "limitations": [
+    "синтетические документы: слова из псевдо-словаря с Zipf-распределением; качество выдачи не оценивается",
+    "запросы — документы с шумом; recall измерен относительно полного перебора float32 на тех же данных",
+    "RSS измерен отдельным процессом (ru_maxrss); страницы mmap входят в RSS, но могут быть вытеснены ОС",
+    "float32 при 1M не помещается в RAM песочницы (3.9 ГБ): замер через memmap, RSS и задержка — для этого режима"
+  ],
+  "targets": {
+    "hash_speedup_target_10x": {
+      "measured": 12.38,
+      "passed": true
+    },
+    "recall_at_10_target_0.7": {
+      "measured": 0.925,
+      "passed": true
+    },
+    "rss_under_1gb_for_ultra": {
+      "measured_mb": 164.4,
+      "passed": true
+    },
+    "fts5_faster_than_like": {
+      "like_worst_p95_ms": 142.6,
+      "fts5_worst_p95_ms": 118.4,
+      "passed": true
+    },
+    "search_under_200ms_on_largest": {
+      "measured_p95_ms": 57.44,
+      "documents": 1000000,
+      "passed": true
+    }
+  },
+  "elapsed_seconds": 146.1
+}

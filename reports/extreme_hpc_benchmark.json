@@ -1,0 +1,297 @@
+{
+  "environment": {
+    "python": "3.11.2",
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "cpu_count": 2,
+    "avx2": true,
+    "popcnt": true,
+    "ram_total_mb": 3939.9,
+    "note": "песочница: 2 vCPU, ~3.9 ГБ RAM; целевой класс — ноутбук 2 ядра / 4–8 ГБ"
+  },
+  "generations": {
+    "G1": "float32 brute force (полный перебор файла float32) + SQLite LIKE",
+    "G2": "итерация 4: линейный POPCNT-скан, rerank 20, без IVF/раннего выхода, FTS5 (JOIN)",
+    "G3a": "итерация 5: IVF(256, nprobe 8) + FWHT-SimHash + ранний выход + одна куча + int8 rerank",
+    "G3b": "итерация 5: как G3a, int4 rerank (512 Б/вектор)"
+  },
+  "hashing": {
+    "backend": "c-avx2-omp",
+    "python_md5_docs_per_s": 2491,
+    "c_md5_batch_docs_per_s": 86282,
+    "c_wyhash_batch_docs_per_s": 222041
+  },
+  "sizes": {
+    "100000": {
+      "build": {
+        "documents_or_vectors": 100000,
+        "hash_embedding_md5_batch_s": 1.3,
+        "hash_docs_per_s": 75484,
+        "index_append_int8_int4_s": 1.4,
+        "index_append_docs_per_s": 72903,
+        "ivf_build_int8_s": 2.2,
+        "ivf_build_int4_s": 2.5,
+        "ivf_int8": {
+          "built": true,
+          "count": 100000,
+          "clusters": 256,
+          "min_cluster": 13,
+          "max_cluster": 3447
+        },
+        "ivf_int4": {
+          "built": true,
+          "count": 100000,
+          "clusters": 256,
+          "min_cluster": 64,
+          "max_cluster": 3399
+        },
+        "disk_mb": {
+          "float32_brute_force": 409.6,
+          "int8_index": 117.9,
+          "int4_index": 67.1
+        }
+      },
+      "search": {
+        "G1_float32_brute": {
+          "mode": "float32_brute",
+          "n": 100000,
+          "queries": 30,
+          "p50_ms": 14.33,
+          "p95_ms": 21.25,
+          "warm_p50_ms": null,
+          "warm_p95_ms": null,
+          "strict_recall_at_10": 1.0,
+          "tolerant_recall_at_10": 1.0,
+          "peak_rss_mb": 419.8,
+          "memory": {
+            "peak_mb": 419.8,
+            "heap_anon_mb": 17.0,
+            "mapped_file_mb": 402.7
+          }
+        },
+        "G2_linear_int8_rr20": {
+          "mode": "linear_int8",
+          "n": 100000,
+          "queries": 30,
+          "p50_ms": 1.67,
+          "p95_ms": 5.58,
+          "warm_p50_ms": 1.61,
+          "warm_p95_ms": 1.78,
+          "strict_recall_at_10": 0.947,
+          "tolerant_recall_at_10": 1.0,
+          "peak_rss_mb": 72.7,
+          "memory": {
+            "peak_mb": 72.7,
+            "heap_anon_mb": 18.6,
+            "mapped_file_mb": 37.7
+          }
+        },
+        "G3a_ivf_int8": {
+          "mode": "ivf_int8",
+          "n": 100000,
+          "queries": 30,
+          "p50_ms": 1.36,
+          "p95_ms": 1.6,
+          "warm_p50_ms": 1.53,
+          "warm_p95_ms": 1.83,
+          "strict_recall_at_10": 0.947,
+          "tolerant_recall_at_10": 1.0,
+          "peak_rss_mb": 65.1,
+          "memory": {
+            "peak_mb": 65.1,
+            "heap_anon_mb": 18.6,
+            "mapped_file_mb": 37.7
+          }
+        },
+        "G3b_ivf_int4": {
+          "mode": "ivf_int4",
+          "n": 100000,
+          "queries": 30,
+          "p50_ms": 1.26,
+          "p95_ms": 1.51,
+          "warm_p50_ms": 1.19,
+          "warm_p95_ms": 1.38,
+          "strict_recall_at_10": 0.693,
+          "tolerant_recall_at_10": 0.84,
+          "peak_rss_mb": 61.2,
+          "memory": {
+            "peak_mb": 61.2,
+            "heap_anon_mb": 18.6,
+            "mapped_file_mb": 37.7
+          }
+        }
+      }
+    },
+    "1000000": {
+      "build": {
+        "documents_or_vectors": 1000000,
+        "hash_embedding_md5_batch_s": 13.9,
+        "hash_docs_per_s": 72111,
+        "index_append_int8_int4_s": 12.5,
+        "index_append_docs_per_s": 80093,
+        "ivf_build_int8_s": 9.3,
+        "ivf_build_int4_s": 12.5,
+        "ivf_int8": {
+          "built": true,
+          "count": 1000000,
+          "clusters": 256,
+          "min_cluster": 54,
+          "max_cluster": 29064
+        },
+        "ivf_int4": {
+          "built": true,
+          "count": 1000000,
+          "clusters": 256,
+          "min_cluster": 224,
+          "max_cluster": 35313
+        },
+        "disk_mb": {
+          "float32_brute_force": 4096.0,
+          "int8_index": 1169.1,
+          "int4_index": 661.1
+        }
+      },
+      "search": {
+        "G1_float32_brute": {
+          "mode": "float32_brute",
+          "n": 1000000,
+          "queries": 10,
+          "p50_ms": 6520.98,
+          "p95_ms": 6579.81,
+          "warm_p50_ms": null,
+          "warm_p95_ms": null,
+          "strict_recall_at_10": 1.0,
+          "tolerant_recall_at_10": 1.0,
+          "peak_rss_mb": 2652.7,
+          "memory": {
+            "peak_mb": 2652.7,
+            "heap_anon_mb": 17.9,
+            "mapped_file_mb": 2521.8
+          }
+        },
+        "G2_linear_int8_rr20": {
+          "mode": "linear_int8",
+          "n": 1000000,
+          "queries": 30,
+          "p50_ms": 22.9,
+          "p95_ms": 40.78,
+          "warm_p50_ms": 13.39,
+          "warm_p95_ms": 18.02,
+          "strict_recall_at_10": 0.91,
+          "tolerant_recall_at_10": 1.0,
+          "peak_rss_mb": 187.3,
+          "memory": {
+            "peak_mb": 187.3,
+            "heap_anon_mb": 18.7,
+            "mapped_file_mb": 37.5
+          }
+        },
+        "G3a_ivf_int8": {
+          "mode": "ivf_int8",
+          "n": 1000000,
+          "queries": 30,
+          "p50_ms": 4.23,
+          "p95_ms": 13.02,
+          "warm_p50_ms": 2.26,
+          "warm_p95_ms": 3.1,
+          "strict_recall_at_10": 0.91,
+          "tolerant_recall_at_10": 1.0,
+          "peak_rss_mb": 80.1,
+          "memory": {
+            "peak_mb": 80.1,
+            "heap_anon_mb": 18.6,
+            "mapped_file_mb": 37.5
+          }
+        },
+        "G3b_ivf_int4": {
+          "mode": "ivf_int4",
+          "n": 1000000,
+          "queries": 30,
+          "p50_ms": 7.19,
+          "p95_ms": 14.73,
+          "warm_p50_ms": 2.11,
+          "warm_p95_ms": 2.84,
+          "strict_recall_at_10": 0.54,
+          "tolerant_recall_at_10": 0.747,
+          "peak_rss_mb": 76.3,
+          "memory": {
+            "peak_mb": 76.3,
+            "heap_anon_mb": 18.6,
+            "mapped_file_mb": 37.8
+          }
+        }
+      }
+    }
+  },
+  "fts": {
+    "chunks": 100000,
+    "terms": {
+      "частый": {
+        "word": "00ct",
+        "like_p95_ms": 0.17,
+        "fts5_join_p95_ms": 137.4,
+        "fts5_two_step_p95_ms": 70.0
+      },
+      "средний": {
+        "word": "0уtгjн0w",
+        "like_p95_ms": 5.31,
+        "fts5_join_p95_ms": 14.9,
+        "fts5_two_step_p95_ms": 4.08
+      },
+      "редкий_средний": {
+        "word": "6vkbлfжn9",
+        "like_p95_ms": 19.76,
+        "fts5_join_p95_ms": 12.22,
+        "fts5_two_step_p95_ms": 3.39
+      },
+      "редкий": {
+        "word": "oоч87х",
+        "like_p95_ms": 30.54,
+        "fts5_join_p95_ms": 6.9,
+        "fts5_two_step_p95_ms": 2.14
+      },
+      "очень_редкий": {
+        "word": "о7rtqu",
+        "like_p95_ms": 144.38,
+        "fts5_join_p95_ms": 7.14,
+        "fts5_two_step_p95_ms": 1.87
+      }
+    },
+    "worst_p95_ms": {
+      "like_p95_ms": 144.38,
+      "fts5_join_p95_ms": 137.4,
+      "fts5_two_step_p95_ms": 70.0
+    },
+    "note_like": "LIKE не ранжирует и отдаёт первые 300 совпадений по rowid DESC: его время — стоимость скана, а не эквивалент bm25-выдачи; ранжирование сравнивать по FTS5-колонкам",
+    "note": "частый терм совпадает почти со всеми чанками: bm25 считается по всем совпадениям — это предел FTS5, не обходится двухшаговым путём; средние термы — прямой выигрыш"
+  },
+  "budget_2m": {
+    "documents": 2000000,
+    "chunks_per_document": 10,
+    "vectors": 20000000,
+    "signs_gb": 2.38,
+    "int4_gb": 9.54,
+    "int8_gb": 19.07,
+    "scales_gb": 0.075,
+    "ids_gb": 0.3,
+    "index_disk_int4_gb": 12.3,
+    "index_disk_int8_gb": 21.8,
+    "ivf_probe_fraction_nprobe8_of_256": 0.0312,
+    "ivf_rows_scanned_per_query": 625000,
+    "ivf_signs_read_per_query_mb": 80.0,
+    "rerank_rows_per_query": 1000,
+    "rerank_bytes_per_query_int4_kb": 500.0,
+    "linear_scan_ms_per_million_measured": 40.78,
+    "ivf_scan_ms_estimate_2m_theoretical": 2.5,
+    "measured_bytes_per_vector": {
+      "int8_index_per_vector_bytes": 1169.1,
+      "int4_index_per_vector_bytes": 661.1
+    },
+    "ram_note": "процесс поиска: RSS по замеру на 1M (см. sizes.1000000.search); сигнатуры 2.4 ГБ и int8/int4 читаются через mmap и страничный кэш ОС, при нехватке памяти ядро их вытесняет",
+    "build_ivf_note": "K-Means + назначение + переукладка: время построения замерено на 100k и 1M (build.ivf_build_*_s)",
+    "caveats": [
+      "оценка по линейной экстраполяции измеренных величин, не замеренный прогон на 2M",
+      "холодный кэш (диск) увеличит время: ~80 МБ сигнатур на запрос при nprobe 8 из 256",
+      "2 vCPU: сборка индекса и хэширование масштабируются ограниченно"
+    ]
+  }
+}

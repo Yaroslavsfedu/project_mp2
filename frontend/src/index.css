@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-950 text-slate-200 antialiased;
+    background-image:
+      radial-gradient(900px 600px at 12% -10%, rgba(132, 48, 224, 0.16), transparent 60%),
+      radial-gradient(700px 500px at 95% 0%, rgba(64, 96, 240, 0.1), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    @apply bg-brand-600/40 text-white;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-ink-600;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-700;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-white/[0.06] bg-ink-850/80 shadow-card backdrop-blur;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-white/10 bg-ink-900/80 px-3.5 py-2.5 text-sm text-slate-100
+      placeholder:text-slate-500 outline-none transition
+      focus:border-brand-500/60 focus:ring-2 focus:ring-brand-500/20;
+  }
+
+  .label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold
+      transition disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-glow hover:from-brand-400 hover:to-brand-500;
+  }
+  .btn-ghost {
+    @apply btn border border-white/10 bg-white/[0.02] text-slate-200 hover:border-white/20 hover:bg-white/[0.06];
+  }
+  .btn-danger {
+    @apply btn border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-400
+      transition hover:bg-white/[0.05] hover:text-slate-100;
+  }
+  .nav-item-active {
+    @apply bg-brand-600/15 text-white ring-1 ring-inset ring-brand-500/30;
+  }
+
+  .mark {
+    @apply rounded bg-brand-500/30 px-0.5 text-white;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+}
+
+/* подсветка найденных совпадений в сниппетах поиска */
+mark {
+  background: rgba(154, 77, 252, 0.35);
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 2px;
+}
