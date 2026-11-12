@@ -3,7 +3,8 @@
 Вместо кэша float32 в куче Python (4 КБ на чанк) хранятся три плоских файла на чанк:
 
 * ``signs.bin`` — 1-битная сигнатура SimHash, 16×uint64 = 128 Б (POPCNT-скан Хэмминга). Биты — знаки
-  случайной проекции (``proj.f32``, dim×dim, фиксированный seed): расстояние Хэмминга оценивает угол;
+  H·D·v (Адамар-вращение со случайными знаками D, seed PROJ_SEED, O(D log D) на вектор; формат v3).
+  Раньше (v2) использовалась плотная матрица dim×dim — O(D²) на вектор;
 * ``int8.bin``  — единичный вектор int8, 1024 Б (доранжирование кандидатов);
 * ``ids.bin``   — UUID чанка, 36 Б (связь с таблицей document_chunks).
 
@@ -33,10 +34,9 @@ from pathlib import Path
 
 import numpy as np
 
-from app.native.loader import get_kernels
+from app.native.loader import get_kernels, sign_vector
 
 META_FILE = "meta.json"
-PROJ_FILE = "proj.f32"
 PROJ_SEED = 20261112  # фиксированный seed: построение и запрос обязаны использовать одну матрицу
 SIGNS_FILE = "signs.bin"
 INT8_FILE = "int8.bin"
@@ -44,8 +44,8 @@ IDS_FILE = "ids.bin"
 ID_BYTES = 36
 CENTROIDS_FILE = "centroids.f32"
 OFFSETS_FILE = "offsets.i64"
-FORMAT_VERSION = 2  # v2: SimHash-сигнатуры (v1 — знаки координат, несовместимы). IVF-поля необязательны:
-#                    индекс v2 без них читается, IVF просто не построен (линейный скан).
+FORMAT_VERSION = 3  # v3: SimHash через FWHT-вращение (v2 — плотная проекция, несовместима → переиндексация).
+#                    IVF-поля в meta необязательны: индекс без них читается, IVF просто не построен.
 IVF_BLOCK = 8192  # строк за раз при назначении кластеров и переукладке (ограничение RAM)
 KMEANS_SAMPLE = 20_000
 KMEANS_ITERS = 8
@@ -69,20 +69,16 @@ class MmapVectorIndex:
         self.ivf_count = 0  # строки [0, ivf_count) уложены по кластерам; дальше — хвост-дельта
         self.ivf_clusters = 0
         self._ivf: tuple[np.ndarray, np.ndarray] | None = None  # (centroids K×dim f32, offsets K+1 int64)
+        self._rot: tuple[np.ndarray, int] | None = None
         self._load_meta()
 
-    # ---------- проекция SimHash ----------
-    def projection(self) -> np.ndarray:
-        """Матрица dim×dim случайных гиперплоскостей. Создаётся один раз и хранится в каталоге индекса."""
-        path = self.dir / PROJ_FILE
-        if not path.exists() or path.stat().st_size != self.dim * self.dim * 4:
-            self.dir.mkdir(parents=True, exist_ok=True)
-            rng = np.random.default_rng(PROJ_SEED)
-            matrix = rng.standard_normal((self.dim, self.dim)).astype(np.float32)
-            tmp = path.with_suffix(".tmp")
-            matrix.tofile(tmp)
-            os.replace(tmp, path)
-        return np.memmap(path, dtype=np.float32, mode="r", shape=(self.dim, self.dim))
+    # ---------- SimHash через вращение H·D ----------
+    @property
+    def rotation(self) -> tuple[np.ndarray, int]:
+        """Знаки D и размер pad (степень двойки ≥ dim). Детерминированы seed-ом: построение и запрос совпадают."""
+        if self._rot is None:
+            self._rot = sign_vector(self.dim, PROJ_SEED)
+        return self._rot
 
     # ---------- метаданные ----------
     @property
@@ -155,12 +151,9 @@ class MmapVectorIndex:
         vecs = np.ascontiguousarray(vectors, dtype=np.float32)
         if vecs.shape != (len(chunk_ids), self.dim):
             raise ValueError(f"ожидалась форма ({len(chunk_ids)}, {self.dim}), получено {vecs.shape}")
-        signs = np.zeros((len(chunk_ids), self.words), dtype=np.uint64)
-        int8 = np.zeros((len(chunk_ids), self.dim), dtype=np.int8)
-        proj = self.projection()
-        for row in range(len(chunk_ids)):
-            signs[row] = self.kernels.simhash(vecs[row], proj)
-            int8[row] = self.kernels.quantize_unit_i8(vecs[row])
+        dsign, pad = self.rotation
+        signs = self.kernels.simhash_fwht(vecs, dsign, pad)  # пакетно (OpenMP, если доступно)
+        int8 = self.kernels.quantize_unit_i8_batch(vecs)
         ids = np.array([cid.encode("ascii").ljust(ID_BYTES, b" ")[:ID_BYTES] for cid in chunk_ids],
                        dtype=f"S{ID_BYTES}")
         with self._lock:
@@ -207,7 +200,8 @@ class MmapVectorIndex:
             ivf_count, count = self.ivf_count, self.count
         signs, int8, ids = maps
         q = np.asarray(query, dtype=np.float32)
-        q_sig = self.kernels.simhash(q, self.projection())
+        dsign, pad = self.rotation
+        q_sig = self.kernels.simhash_fwht(q, dsign, pad)
         q_i8 = self.kernels.quantize_unit_i8(q)
         cand = min(max(k * rerank_factor, 200), count)
         if ivf is None:

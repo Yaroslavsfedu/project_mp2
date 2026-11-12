@@ -363,4 +363,4 @@ async def test_sqlite_low_memory_pragmas_applied():
 
 
 def test_native_library_reports_backend():
-    assert get_kernels().backend in {"numpy", "c-avx2", "c-scalar"}
+    assert get_kernels().backend in {"numpy", "c-avx2", "c-scalar", "c-avx2-omp", "c-scalar-omp"}

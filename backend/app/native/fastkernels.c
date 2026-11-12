@@ -302,11 +302,46 @@ static inline size_t encode_cp(uint32_t c, uint8_t *dst) {
     return 3;
 }
 
-/* Добавляет один признак: MD5 признака, затем (int)(hex→int) mod dim, как в Python. */
-static void add_feature(float *vec, int32_t dim, const uint32_t *cps, size_t n, double weight) {
+/* Методы хэширования признаков. MD5 — совместим с Python (ml_pipeline.text_utils), используется по умолчанию.
+ * WYHASH — быстрый некриптографический хэш + знаковое хэширование CountSketch (±1); эмбеддинги НЕ совместимы
+ * с MD5, поэтому переключение требует переиндексации (см. docs). */
+#define FK_HASH_MD5 0
+#define FK_HASH_WYHASH 1
+
+/* wyhash-подобный 64-битный хэш: умножение 64×64→128 бит (MUL), XOR-свёртка. Для коротких строк — 3–4 MUL. */
+static inline uint64_t fk_mix(uint64_t a, uint64_t b) {
+    __uint128_t r = (__uint128_t)a * b;
+    return (uint64_t)r ^ (uint64_t)(r >> 64);
+}
+
+static uint64_t fk_wyhash(const uint8_t *p, size_t len, uint64_t seed) {
+    const uint64_t s0 = 0xa0761d6478bd642full, s1 = 0xe7037ed1a0b428dbull, s2 = 0x8ebc6af09c88c6e3ull;
+    uint64_t h = seed ^ s0;
+    size_t i = 0;
+    while (i + 8 <= len) {
+        uint64_t w;
+        memcpy(&w, p + i, 8);
+        h = fk_mix(w ^ s1, h ^ s2);
+        i += 8;
+    }
+    uint64_t w = 0;
+    if (i < len) memcpy(&w, p + i, len - i);
+    h = fk_mix(w ^ s1 ^ (uint64_t)len, h ^ s2);
+    return fk_mix(h ^ s0, s1 ^ (uint64_t)len);
+}
+
+/* Добавляет один признак. MD5: дайджест mod dim, как в Python. WYHASH: индекс = h mod dim, знак = бит CountSketch. */
+static void add_feature(int method, float *vec, int32_t dim, const uint32_t *cps, size_t n, double weight) {
     uint8_t msg[64];
     size_t len = 0;
     for (size_t i = 0; i < n; i++) len += encode_cp(cps[i], msg + len);
+    if (method == FK_HASH_WYHASH) {
+        uint64_t h = fk_wyhash(msg, len, 0x9E3779B97F4A7C15ull);
+        uint64_t sign_bit = fk_mix(h, 0xD6E8FEB86659FD93ull) >> 63;
+        float w = (float)weight;
+        vec[h % (uint64_t)dim] += sign_bit ? -w : w;
+        return;
+    }
     uint8_t dig[16];
     md5_short(msg, len, dig);
     /* дайджест — 128-битное big-endian число: value = hi·2^64 + lo; r = value mod dim.
@@ -322,7 +357,7 @@ static void add_feature(float *vec, int32_t dim, const uint32_t *cps, size_t n, 
 
 /* Хэш-эмбеддинг текста длиной len байт UTF-8 в out[dim] (нормированный L2).
  * Возвращает число токенов, либо -1 при ошибке. */
-FK_EXPORT int64_t fk_hash_embed(const uint8_t *utf8, int64_t len, int32_t dim, float *out) {
+static int64_t hash_embed_core(const uint8_t *utf8, int64_t len, int32_t dim, float *out, int method) {
     if (dim <= 0) return -1;
     memset(out, 0, (size_t)dim * sizeof(float));
 
@@ -339,13 +374,13 @@ FK_EXPORT int64_t fk_hash_embed(const uint8_t *utf8, int64_t len, int32_t dim, f
                 uint32_t f1[5];                                                        \
                 size_t n1 = tlen < 5 ? tlen : 5;                                       \
                 memcpy(f1, first, n1 * sizeof(uint32_t));                              \
-                add_feature(out, dim, f1, n1, weight);                                 \
+                add_feature(method, out, dim, f1, n1, weight);                                 \
                 if (tlen > 4) {                                                        \
                     uint32_t f2[4];                                                    \
                     for (int j = 0; j < 4; j++) f2[j] = ring[(tlen - 4 + j) & 3];      \
-                    add_feature(out, dim, f2, 4, weight);                              \
+                    add_feature(method, out, dim, f2, 4, weight);                              \
                 } else {                                                               \
-                    add_feature(out, dim, first, tlen, weight);                        \
+                    add_feature(method, out, dim, first, tlen, weight);                        \
                 }                                                                      \
                 tokens++;                                                              \
             }                                                                          \
@@ -384,4 +419,90 @@ FK_EXPORT int64_t fk_hash_embed(const uint8_t *utf8, int64_t len, int32_t dim, f
         for (int32_t k = 0; k < dim; k++) out[k] *= inv;
     }
     return tokens;
+}
+
+FK_EXPORT int64_t fk_hash_embed(const uint8_t *utf8, int64_t len, int32_t dim, float *out) {
+    return hash_embed_core(utf8, len, dim, out, FK_HASH_MD5);
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. Пакетные функции с OpenMP (без GIL: один вызов из Python на весь батч) */
+/* ------------------------------------------------------------------ */
+
+FK_EXPORT int32_t fk_has_openmp(void) {
+#ifdef _OPENMP
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+/* Батч хэш-эмбеддингов. buf — все тексты подряд (UTF-8), offs[n+1] — границы; out — n×dim float32.
+ * method: 0 = MD5 (совместим с Python), 1 = wyhash + CountSketch. Потоки пишут в разные строки out. */
+FK_EXPORT void fk_hash_embed_batch(const uint8_t *buf, const int64_t *offs, int64_t n, int32_t dim,
+                                   int32_t method, float *out) {
+    #pragma omp parallel for schedule(guided)
+    for (int64_t i = 0; i < n; i++) {
+        hash_embed_core(buf + offs[i], offs[i + 1] - offs[i], dim, out + (size_t)i * (size_t)dim, method);
+    }
+}
+
+/* Быстрое преобразование Уолша–Адамара без нормировки, in-place, n — степень двойки.
+ * Только сложения и вычитания: O(n log n), без умножений. Внутренний цикл векторизуется компилятором. */
+FK_EXPORT void fk_fwht(float *x, int64_t n) {
+    for (int64_t h = 1; h < n; h <<= 1) {
+        for (int64_t i = 0; i < n; i += 2 * h) {
+            for (int64_t j = i; j < i + h; j++) {
+                float a = x[j], b = x[j + h];
+                x[j] = a + b;
+                x[j + h] = a - b;
+            }
+        }
+    }
+}
+
+/* SimHash с ортогональным вращением: y = H·D·v, где D — диагональ случайных знаков (dsign, длина pad),
+ * H — преобразование Адамара (pad — степень двойки ≥ dim). Бит j = [y_j > 0] для j < bits.
+ * Стоимость O(pad log pad) вместо O(dim²) у плотной матрицы проекции. */
+static void simhash_fwht_one(const float *v, int64_t dim, const float *dsign, int64_t pad, int64_t bits,
+                             float *buf, uint64_t *out) {
+    for (int64_t i = 0; i < pad; i++) buf[i] = (i < dim) ? v[i] * dsign[i] : 0.0f;
+    fk_fwht(buf, pad);
+    int64_t words = (bits + 63) / 64;
+    memset(out, 0, (size_t)words * sizeof(uint64_t));
+    for (int64_t j = 0; j < bits; j++) {
+        if (buf[j] > 0.0f) out[j >> 6] |= (uint64_t)1 << (j & 63);
+    }
+}
+
+FK_EXPORT void fk_simhash_fwht(const float *v, int64_t dim, const float *dsign, int64_t pad, int64_t bits,
+                               uint64_t *out) {
+    float *buf = (float *)malloc((size_t)pad * sizeof(float));
+    if (!buf) return;
+    simhash_fwht_one(v, dim, dsign, pad, bits, buf, out);
+    free(buf);
+}
+
+/* Батч SimHash: V — n×dim float32, out — n×words uint64. */
+FK_EXPORT void fk_simhash_fwht_batch(const float *V, int64_t n, int64_t dim, const float *dsign, int64_t pad,
+                                     int64_t bits, uint64_t *out) {
+    int64_t words = (bits + 63) / 64;
+    #pragma omp parallel
+    {
+        float *buf = (float *)malloc((size_t)pad * sizeof(float));
+        #pragma omp for schedule(static)
+        for (int64_t i = 0; i < n; i++) {
+            if (buf) simhash_fwht_one(V + (size_t)i * (size_t)dim, dim, dsign, pad, bits, buf,
+                                      out + (size_t)i * (size_t)words);
+        }
+        free(buf);
+    }
+}
+
+/* Батч квантования int8: V — n×dim float32, out — n×dim int8 (единичные векторы, масштаб 127). */
+FK_EXPORT void fk_quantize_unit_i8_batch(const float *V, int64_t n, int64_t dim, int8_t *out) {
+    #pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n; i++) {
+        fk_quantize_unit_i8(V + (size_t)i * (size_t)dim, dim, out + (size_t)i * (size_t)dim);
+    }
 }
