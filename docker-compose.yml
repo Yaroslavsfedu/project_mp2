@@ -89,6 +89,7 @@ services:
       OLLAMA_URL: http://ollama:11434
       MINIO_ENDPOINT: minio:9000
       SEED_DEMO: "false"
+      TRUST_PROXY_HEADERS: "true"  # API за nginx: IP клиента из X-Forwarded-For
     volumes:
       - appdata:/app/data
     depends_on:

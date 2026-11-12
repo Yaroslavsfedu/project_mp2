@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.ratelimit import limit_login
 from app.core.security import create_access_token, get_current_user, hash_password, verify_password
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.document import TokenOut, UserCreate, UserLogin, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -23,9 +23,11 @@ async def register(payload: UserCreate, db: Annotated[AsyncSession, Depends(get_
     exists = await db.scalar(select(User).where(User.email == payload.email.lower()))
     if exists:
         raise HTTPException(status.HTTP_409_CONFLICT, "Пользователь с таким email уже существует")
-    # Первый зарегистрированный пользователь становится администратором
+    # Роль из запроса НЕ принимается: иначе любой аноним зарегистрируется админом.
+    # Первый пользователь системы становится администратором, остальные — operator
+    # (повышение — только через админ-панель: PATCH /admin/users/{id}).
     users_count = await db.scalar(select(User.id).limit(1))
-    role = "admin" if users_count is None else payload.role
+    role = UserRole.ADMIN if users_count is None else UserRole.OPERATOR
     user = User(
         email=payload.email.lower(),
         password_hash=hash_password(payload.password),

@@ -13,10 +13,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
+from app.api.v1.documents import SERVE_MEDIA_TYPES
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.security import get_current_user
 from app.models.user import User
+from app.services.events import redis_listener
 from app.services.seed_service import seed_demo_data
 from app.services.storage_service import storage
 
@@ -35,7 +37,17 @@ async def lifespan(app: FastAPI):
     logger.info("База данных готова: %s", settings.DATABASE_URL)
     if settings.SEED_DEMO:
         asyncio.create_task(seed_demo_data())
+    listener = None
+    if settings.QUEUE_BACKEND == "celery":
+        listener = asyncio.create_task(redis_listener())
+    if settings.SECRET_KEY.startswith("change-me"):
+        logger.warning(
+            "SECRET_KEY не задан: используется значение по умолчанию. "
+            "Сгенерируйте свой ключ (scripts/install.sh делает это автоматически)."
+        )
     yield
+    if listener is not None:
+        listener.cancel()
     logger.info("Остановка приложения")
 
 
@@ -78,7 +90,12 @@ async def get_stored_file(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл не найден") from None
     if not Path(path).exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл не найден")
-    return FileResponse(path)
+    suffix = Path(key).suffix.lower()
+    return FileResponse(
+        path,
+        media_type=SERVE_MEDIA_TYPES.get(suffix, "application/octet-stream"),
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 # Собранный фронтенд (production-образ Nginx/uvicorn) отдаётся с того же origin

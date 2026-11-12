@@ -20,6 +20,8 @@ minio==7.2.12
 
 # ---- Background tasks ----
 celery==5.4.0
+# kombu закреплён: более новые версии требуют redis-py>=6.1 и несовместимы с redis==5.2.1
+kombu==5.4.0
 redis==5.2.1
 
 # ---- Document processing / CV / OCR ----

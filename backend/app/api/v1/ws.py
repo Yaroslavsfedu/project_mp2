@@ -6,20 +6,34 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from sqlalchemy import select
+
+from app.core.database import SessionLocal
 from app.core.security import decode_token
+from app.models.user import User
 from app.services.events import bus
 
 router = APIRouter(tags=["ws"])
 
 
+async def _authorized(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        payload = decode_token(token)
+    except Exception:  # noqa: BLE001
+        return False
+    async with SessionLocal() as session:
+        user = await session.scalar(select(User).where(User.id == payload.get("sub")))
+    return bool(user and user.is_active)
+
+
 @router.websocket("/ws/documents")
 async def documents_ws(websocket: WebSocket, token: str | None = None):
-    if token:
-        try:
-            decode_token(token)
-        except Exception:  # noqa: BLE001
-            await websocket.close(code=4401)
-            return
+    # статусы документов — данные пользователя: без действующего токена соединение не открываем
+    if not await _authorized(token):
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     await websocket.send_text(json.dumps({"type": "connected"}, ensure_ascii=False))
 

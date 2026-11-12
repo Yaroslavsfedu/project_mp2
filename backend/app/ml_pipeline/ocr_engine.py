@@ -111,6 +111,35 @@ def recognize_image(image_bytes: bytes) -> OcrPageResult:
     return OcrPageResult(words=words, avg_confidence=avg, engine="tesseract")
 
 
+def detect_orientation(image) -> int:
+    """Поворот страницы, при котором текст читается прямо: 0, 90, 180 или 270 градусов.
+
+    Использует Tesseract OSD (Orientation and Script Detection). Если Tesseract
+    не установлен или текста недостаточно для уверенного решения — возвращает 0.
+    Угол — это поворот, который нужно компенсировать (по часовой стрелке).
+    """
+    if not tesseract_available():
+        return 0
+    try:
+        osd = pytesseract.image_to_osd(image, config="--psm 0")
+    except Exception as exc:  # noqa: BLE001 - мало текста / нет языковых данных OSD
+        logger.info("OSD не определил ориентацию: %s", exc)
+        return 0
+    values: dict[str, str] = {}
+    for line in osd.splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            values[key.strip()] = value.strip()
+    try:
+        rotate = int(float(values.get("Rotate", "0")))
+        confidence = float(values.get("Orientation confidence", "0"))
+    except ValueError:
+        return 0
+    if rotate in (90, 180, 270) and confidence >= 1.5:
+        return rotate
+    return 0
+
+
 def words_to_boxes(words: list[OcrWord], start_index: int = 0) -> list[dict]:
     return [
         {

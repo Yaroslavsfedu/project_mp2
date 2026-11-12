@@ -35,12 +35,16 @@ celery_app.conf.update(
 @celery_app.task(name="idp.process_document", bind=True, max_retries=2)
 def process_document_task(self, document_id: str) -> str:
     """Запускает асинхронный пайплайн обработки документа в отдельном event loop."""
-    from app.core.database import init_db
+    from app.core.database import engine, init_db
     from app.services.pipeline_service import process_document
 
     async def runner() -> None:
-        await init_db()
-        await process_document(document_id)
+        try:
+            await init_db()
+            await process_document(document_id)
+        finally:
+            # соединения asyncpg привязаны к event loop этой задачи — не переиспользуем их
+            await engine.dispose()
 
     try:
         asyncio.run(runner())
@@ -49,8 +53,3 @@ def process_document_task(self, document_id: str) -> str:
         logger.exception("Celery task failed for %s", document_id)
         raise self.retry(exc=exc, countdown=13) from exc
 
-
-@celery_app.task(name="idp.reindex_all")
-def reindex_all_task() -> str:
-    """Переиндексация всех документов (например, после смены embedding-модели)."""
-    return "not-implemented"

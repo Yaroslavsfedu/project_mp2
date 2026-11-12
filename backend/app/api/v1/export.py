@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.http import content_disposition
 from app.core.security import get_current_user
 from app.models.document import Document
 from app.models.user import User
@@ -38,7 +39,7 @@ async def export_document(
     return Response(
         content=content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition(filename)},
     )
 
 
@@ -75,5 +76,5 @@ async def export_batch(
     return Response(
         content=content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition(filename)},
     )

@@ -11,14 +11,13 @@ import base64
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
 
 from app.core.config import settings
 from app.ml_pipeline.text_utils import (
-    chunk_text,
-    cosine,
     hashing_embedding,
     keywords as extract_keywords,
     normalize_text,
@@ -342,14 +341,20 @@ def heuristic_analysis(text: str) -> DocumentAnalysisResult:
 
 
 # --------------------------------- Ollama ---------------------------------
+AVAILABILITY_TTL_SECONDS = 15.0
+
+
 class OllamaClient:
     def __init__(self) -> None:
         self.base_url = settings.OLLAMA_URL.rstrip("/")
         self.model = settings.OLLAMA_MODEL
-        self._available: bool | None = None
+        # результат проверки кэшируем ненадолго: Ollama может стартовать позже API
+        # или упасть во время работы — раньше это навсегда отключало LLM до перезапуска
+        self._available = False
+        self._checked_at = float("-inf")
 
     async def is_available(self) -> bool:
-        if self._available is not None:
+        if time.monotonic() - self._checked_at < AVAILABILITY_TTL_SECONDS:
             return self._available
         try:
             async with httpx.AsyncClient(timeout=2.5) as client:
@@ -357,7 +362,32 @@ class OllamaClient:
                 self._available = response.status_code == 200
         except Exception:  # noqa: BLE001
             self._available = False
+        self._checked_at = time.monotonic()
         return self._available
+
+    def mark_unavailable(self) -> None:
+        """Сбрасывает кэш: следующий запрос заново проверит доступность."""
+        self._available = False
+        self._checked_at = float("-inf")
+
+    async def generate_text(self, prompt: str, system: str, timeout: float | None = None) -> str | None:
+        """Свободная генерация текста (коррекция OCR). None — если модель не ответила."""
+        payload = {
+            "model": self.model,
+            "system": system,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_ctx": 8192},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout or settings.LLM_TIMEOUT_SECONDS) as client:
+                response = await client.post(f"{self.base_url}/api/generate", json=payload)
+                response.raise_for_status()
+                return (response.json().get("response") or "").strip() or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Ollama generate_text failed: %s", exc)
+            self.mark_unavailable()
+            return None
 
     async def list_models(self) -> list[str]:
         """Список локально установленных моделей (GET /api/tags)."""
@@ -400,7 +430,7 @@ class OllamaClient:
                 return json.loads(body.get("response", "{}"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Ollama generate failed: %s", exc)
-            self._available = False
+            self.mark_unavailable()
             return None
 
     async def embed(self, texts: list[str]) -> list[list[float]] | None:
@@ -446,6 +476,34 @@ async def analyze_document(text: str, *, page_hint: str = "") -> AnalysisOutcome
     if not settings.LLM_FALLBACK_ENABLED:
         raise RuntimeError("Локальная LLM недоступна, fallback отключён")
     return AnalysisOutcome(result=heuristic_analysis(text), engine="fallback")
+
+
+CORRECTION_PROMPT = (
+    "Ты — корректор текста после OCR. Исправь только явные ошибки распознавания: разорванные "
+    "переносами слова, склеенные слова, буквы, распознанные вместо похожих символов (например, "
+    "«0» вместо «О» в словах). Не меняй цифры, номера, даты, суммы, ИНН/ОГРН и фамилии, если не "
+    "уверен. Не добавляй, не сокращай и не пересказывай текст. Верни только исправленный текст."
+)
+
+
+async def correct_page_text(text: str) -> tuple[str, str]:
+    """Пост-OCR коррекция одной страницы локальной LLM.
+
+    Возвращает (текст, движок). Без LLM или при подозрительном ответе (слишком
+    короткий/длинный — признак пересказа или обрыва) используется детерминированная
+    нормализация, чтобы модель не могла потерять или выдумать содержание.
+    """
+    base = normalize_text(text)
+    if not base or not await ollama.is_available():
+        return base, "fallback"
+    corrected = await ollama.generate_text(base[:12000], system=CORRECTION_PROMPT)
+    if not corrected:
+        return base, "fallback"
+    ratio = len(corrected) / max(len(base), 1)
+    if 0.75 <= ratio <= 1.25:
+        return normalize_text(corrected), "ollama"
+    logger.info("Коррекция LLM отброшена: длина изменилась на %.0f%%", (ratio - 1) * 100)
+    return base, "fallback"
 
 
 async def embed_texts(texts: list[str]) -> tuple[list[list[float]], str]:
@@ -521,7 +579,7 @@ VISION_OCR_PROMPT = (
 async def vision_extract_text(png_bytes: bytes) -> str | None:
     """OCR через локальную VLM (qwen2-vl / llava) — для сканов и рукописного текста.
 
-    Используется, когда Tesseract недоступен, а GPU позволяет держать视觉-модель.
+    Используется, когда Tesseract недоступен, а GPU позволяет держать vision-модель.
     Координаты слов VLM не возвращает, поэтому на фронтенде страница будет
     доступна без Bounding Boxes (текст и сущности работают как обычно).
     """

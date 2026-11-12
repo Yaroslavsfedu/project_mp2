@@ -12,13 +12,18 @@ from pathlib import Path
 
 from app.core.config import settings
 
-_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._- ")
+_EXTRA_SAFE = set("._- ()[]")
 
 
 def safe_filename(name: str) -> str:
-    """Защита от Path Traversal и небезопасных символов в имени файла."""
+    """Защита от Path Traversal и управляющих символов в имени файла.
+
+    Буквы и цифры любых алфавитов (в т.ч. кириллица) сохраняются, опасные
+    символы (слэши, кавычки, управляющие коды) заменяются на «_».
+    """
     name = Path(name or "document").name.replace("\\", "_").replace("/", "_")
-    cleaned = "".join(ch if ch in _SAFE_CHARS else "_" for ch in name).strip(" .")
+    cleaned = "".join(ch if (ch.isalnum() or ch in _EXTRA_SAFE) else "_" for ch in name)
+    cleaned = cleaned.strip(" .")
     return (cleaned or "document")[:200]
 
 

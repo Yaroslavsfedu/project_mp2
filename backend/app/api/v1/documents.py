@@ -17,9 +17,9 @@ from app.core.database import get_db
 from app.core.ratelimit import limit_upload
 from app.core.security import get_current_user
 from app.ml_pipeline.llm_service import answer_question, embed_texts
-from app.ml_pipeline.text_utils import cosine
-from app.models.document import Document, DocumentChunk, DocumentStatus, ExtractedData, OcrPage
-from app.models.user import User, UserRole
+from app.services.search_service import rank_document_chunks
+from app.models.document import Document, DocumentStatus, ExtractedData, OcrPage
+from app.models.user import User, UserRole, utcnow
 from app.schemas.document import (
     ChatRequest,
     ChatResponse,
@@ -39,6 +39,20 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".docx", ".txt", ".md"}
 # проверка реального типа файла по Magic Bytes (а не по расширению)
+TEXT_SUFFIXES = {".txt", ".md"}
+# Тип для отдачи оригинала: определяется расширением, а не заголовком клиента.
+SERVE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+}
+INLINE_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 MAGIC_PREFIXES: dict[str, tuple[bytes, ...]] = {
     ".pdf": (b"%PDF",),
     ".jpg": (b"\xff\xd8\xff",),
@@ -73,6 +87,9 @@ def validate_upload(filename: str, data: bytes) -> str:
             status.HTTP_400_BAD_REQUEST,
             "Содержимое файла не соответствует его расширению (проверка Magic Bytes)",
         )
+    if suffix in TEXT_SUFFIXES and b"\x00" in data[:8192]:
+        # у текстовых файлов нет нулевых байтов; бинарник, переименованный в .txt, отсекаем
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Файл .txt/.md содержит бинарные данные")
     return suffix
 
 
@@ -119,12 +136,17 @@ async def upload_documents(
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Файлы не переданы")
 
-    created: list[Document] = []
+    # сначала валидируем весь пакет: при ошибке в одном файле ничего не записываем
+    prepared: list[tuple[str, bytes, str]] = []
     for upload in files:
         data = await upload.read()
         suffix = validate_upload(upload.filename or "document", data)
+        prepared.append((upload.filename or "document", data, suffix))
+
+    created: list[Document] = []
+    for (original_name, data, suffix), upload in zip(prepared, files, strict=True):
         document_id = str(uuid.uuid4())
-        filename = safe_filename(Path(upload.filename or "document").stem) + suffix
+        filename = safe_filename(Path(original_name).stem) + suffix
         key = f"originals/{document_id}/{filename}"
         await storage.put(key, data)
         document = Document(
@@ -140,6 +162,9 @@ async def upload_documents(
             progress=0,
         )
         db.add(document)
+        # документ нужно записать ДО журнала аудита: строка аудита ссылается на него по FK,
+        # а без связи в ORM порядок вставки не гарантирован (PostgreSQL проверяет FK)
+        await db.flush()
         created.append(document)
         await log_action(
             db,
@@ -271,7 +296,16 @@ async def get_original_file(
     path = await storage.local_path(document.s3_key_original)
     if not Path(path).exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл недоступен в хранилище")
-    return FileResponse(path, filename=document.filename, media_type=document.mime_type)
+    suffix = Path(document.filename).suffix.lower()
+    # тип задаём по расширению и запрещаем браузеру «угадывать» тип (nosniff),
+    # иначе HTML, загруженный как .txt, исполнился бы в контексте приложения
+    return FileResponse(
+        path,
+        filename=document.filename,
+        media_type=SERVE_MEDIA_TYPES.get(suffix, "application/octet-stream"),
+        content_disposition_type="inline" if suffix in INLINE_SUFFIXES else "attachment",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 # --------------------------------- verify ---------------------------------
@@ -309,7 +343,7 @@ async def verify_document(
 
     extracted.is_verified = payload.is_verified
     extracted.verified_by = user.id
-    extracted.verified_at = datetime.utcnow() if payload.is_verified else None
+    extracted.verified_at = utcnow() if payload.is_verified else None
     if payload.is_verified:
         document.status = DocumentStatus.VERIFIED
 
@@ -390,19 +424,15 @@ async def chat_with_document(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     document = await get_document_or_404(db, document_id)
-    rows = await db.execute(select(DocumentChunk).where(DocumentChunk.document_id == document_id))
-    chunks = list(rows.scalars())
-    if not chunks:
-        # fallback: используем текст страниц
+    vectors, engine = await embed_texts([payload.question])
+    chunks_text = await rank_document_chunks(db, document_id, vectors[0], engine, 4)
+    if not chunks_text:
+        # индекса нет (например, документ обработан другим движком эмбеддингов) —
+        # берём текст страниц целиком
         pages = sorted(document.pages, key=lambda p: p.page_number)[:5]
         chunks_text = [(p.page_number, (p.corrected_text or p.raw_text)) for p in pages if p.raw_text]
         if not chunks_text:
             raise HTTPException(status.HTTP_409_CONFLICT, "Документ ещё не обработан")
-    else:
-        vectors, _ = await embed_texts([payload.question])
-        query_vector = vectors[0]
-        ranked = sorted(chunks, key=lambda c: cosine(query_vector, c.embedding or []), reverse=True)[:4]
-        chunks_text = [(c.page_number, c.chunk_text) for c in ranked]
 
     answer, engine, best = await answer_question(payload.question, [text for _, text in chunks_text])
     sources = [

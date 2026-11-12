@@ -1,342 +1,228 @@
-# IDP Platform — оцифровка документов и интеллектуальная обработка информации
+# IDP Platform — оцифровка и обработка документов
 
-Веб-приложение (Intelligent Document Processing) для загрузки, распознавания и интеллектуальной
-обработки документов **полностью в локальном контуре**: OCR с координатами слов, локальная LLM
-(Ollama / Qwen 2.5), извлечение сущностей, гибридный поиск, ручная верификация и экспорт.
+Веб-приложение для загрузки, распознавания и обработки документов (IDP) с **полностью локальной**
+обработкой: OCR, извлечение сущностей через локальную LLM (Ollama), поиск, ручная верификация и экспорт.
+Внешние платные API не используются.
 
-**Запуск на своём ПК:** `./scripts/bootstrap.sh` → `make dev` (подробно — раздел
-[«Быстрый старт»](#быстрый-старт-локально)). Для машины с GPU — [`docs/GPU_DEPLOY.md`](docs/GPU_DEPLOY.md).
-
-> Междисциплинарный проект Проектного офиса ИКТИБ ЮФУ.
-> Наставник: Семенов В. Е., м.н.с. НИИ МВС ЮФУ, руководитель СНО «Экспонента».
-> Полная инженерная спецификация — [`AI/context/project.md`](AI/context/project.md).
-
-![Стек](https://img.shields.io/badge/stack-FastAPI%20%2B%20React%20%2B%20PostgreSQL%2Fpgvector-8430e0)
-![AI](https://img.shields.io/badge/AI-Ollama%20%C2%B7%20Qwen%202.5%20%C2%B7%20bge--m3-9a4dfc)
-![On-Premise](https://img.shields.io/badge/On--Premise-no%20external%20APIs-1f9d6b)
+Проект ИКТИБ ЮФУ (Проектный офис). Спецификация: [`AI/context/project.md`](AI/context/project.md).
 
 ---
 
-## Что уже реализовано (MVP+)
+## Что умеет
 
-| Блок требований | Статус | Где смотреть |
+- Загрузка PDF, JPG, PNG, TIFF, DOCX, TXT — пакетно, до 50 МБ на файл; проверка по сигнатуре файла (magic bytes).
+- Извлечение текста: текстовый слой PDF и DOCX; для сканов — OCR (Tesseract или локальная VLM через Ollama).
+- Препроцессинг сканов: выравнивание наклона, удаление синих печатей, бинаризация, поворот 0/90/180/270.
+- LLM (Ollama, `qwen2.5:7b-instruct`): коррекция OCR, классификация типа, извлечение сущностей (ФИО, организации,
+  даты, суммы, ИНН/ОГРН, адреса), резюме, строгий JSON. Если Ollama недоступна — включается
+  эвристический fallback (регулярные выражения и правила).
+- Поиск: полнотекстовый, семантический (эмбеддинги `bge-m3`) и гибридный, с фильтрами.
+- Split-Screen верификация: скан с подсветкой слов ↔ текст ↔ форма сущностей; статус «проверено».
+- Вопросы по документу (RAG-чат) с указанием фрагментов-источников.
+- Экспорт: JSON, CSV, DOCX, TXT, Markdown; пакетный экспорт CSV и XLSX.
+- Статусы обработки в реальном времени (WebSocket), журнал аудита, роли admin / operator / viewer.
+
+Подробный список соответствия ТЗ и известные отклонения — в разделе [«Соответствие ТЗ»](#соответствие-тз).
+
+---
+
+## Требования
+
+| Компонент | Минимум | Примечание |
 |---|---|---|
-| Пакетная загрузка PDF / JPG / PNG / TIFF / DOCX / TXT | ✅ | `frontend/src/components/upload`, `backend/app/api/v1/documents.py` |
-| Валидация: расширение, размер, **Magic Bytes**, безопасные имена | ✅ | `validate_upload()`, `safe_filename()` |
-| Гибридный PDF: нативный текстовый слой без OCR + рендер страниц 150 DPI | ✅ | `ml_pipeline/pdf_handler.py` |
-| Препроцессинг CV: deskew, удаление синих/фиолетовых печатей, denoise, адаптивная бинаризация | ✅ | `ml_pipeline/preprocessor.py` |
-| OCR-движок с координатами и confidence (Tesseract rus+eng), подключаемые PaddleOCR/EasyOCR | ✅ | `ml_pipeline/ocr_engine.py` |
-| Локальная LLM: пост-коррекция, классификация, NER, суммаризация, строгий JSON | ✅ | `ml_pipeline/llm_service.py` |
-| Эвристический fallback без GPU/Ollama (regex-NER, классификация по маркерам, extractive summary) | ✅ | `llm_service.py` |
-| Интерактивный Split-Screen: скан + Bounding Boxes ↔ текст ↔ форма сущностей | ✅ | `frontend/src/components/viewer`, `DocumentViewPage.tsx` |
-| Ручная верификация (Human-in-the-loop) с редактированием сущностей и статусом `verified` | ✅ | `PUT /api/v1/documents/{id}/verify` |
-| Полнотекстовый поиск (стемминг + подсветка), семантический (эмбеддинги) и гибридный | ✅ | `services/search_service.py`, `SearchPage.tsx` |
-| RAG-чат по документу с указанием источников | ✅ | `POST /api/v1/documents/{id}/chat` |
-| Экспорт: JSON, CSV, DOCX, Markdown, TXT + пакетный XLSX | ✅ | `services/export_service.py` |
-| WebSocket-статусы обработки (`pending → ocr_processing → llm_processing → completed`) | ✅ | `api/v1/ws.py`, `useDocumentEvents.ts` |
-| JWT-аутентификация, bcrypt, роли `admin/operator/viewer` (RBAC) | ✅ | `core/security.py`, `api/v1/auth.py` |
-| Docker Compose: frontend, backend, celery, postgres+pgvector, redis, minio, ollama | ✅ | `docker-compose.yml` |
-| Миграции Alembic (включая `audit_logs` и GIN-индексы PostgreSQL) | ✅ | `backend/migrations/versions/` |
-| Журнал аудита действий (кто, что, когда, IP) | ✅ | `services/audit_service.py`, `PUT /verify` и др. |
-| Админ-панель: пользователи, роли, аудит, метрики, состояние стека | ✅ | `frontend/src/pages/AdminPage.tsx`, `api/v1/admin.py` |
-| Метрики качества: CER, WER, NER P/R/F1, точность классификации + отчёт JSON/Markdown | ✅ | `services/quality_service.py`, `scripts/evaluate.py` |
-| Замер производительности на конкретном железе | ✅ | `backend/scripts/benchmark.py`, `reports/benchmark.json` |
-| Нагрузочный тест через API (rps, p95, док/мин) | ✅ | `backend/scripts/load_test.py`, `make load-test` |
-| Rate limiting (перебор паролей, флуд загрузками) | ✅ | `core/ratelimit.py` |
-| Полнотекстовый поиск PostgreSQL: `to_tsvector('russian')` + GIN + `ts_headline` | ✅ | `services/search_service.py`, миграция `7c1a4f9e2b10` |
-| OCR через локальную VLM (`qwen2-vl`, `llava`) для сканов и рукописи | ✅ | `ml_pipeline/ocr_engine.py`, `LLM.vision_extract_text` |
-| GPU-профиль (Ollama CUDA + VLM), авто-подбор модели по VRAM | ✅ | `docker-compose.gpu.yml`, `core/hardware.py` |
-| Скрипты установки и диагностики окружения | ✅ | `scripts/bootstrap.sh`, `scripts/check_env.py`, `Makefile` |
-| Тесты (unit + интеграционные: API, пайплайн, RBAC, аудит, метрики) | ✅ | `backend/tests` (44 теста) |
+| ОС | Linux, macOS, Windows 10/11 через **WSL2** | |
+| Python | 3.11+ | `python3 --version` |
+| Node.js | 20+ | только для фронтенда |
+| Ollama | любая актуальная | необязательна; без неё работает fallback |
+| Tesseract | 5.x с языками `rus`, `eng` | необязателен; нужен для сканов |
+| ОЗУ / диск | 8 ГБ / 5 ГБ свободно | для LLM 7B — 16 ГБ ОЗУ, или GPU ≥ 8 ГБ VRAM |
 
 ---
 
-## Архитектура
+## Установка
 
-```
-┌──────────────────────────── Браузер (React 18 + TS + Tailwind) ────────────────────────────┐
-│  Dashboard · Documents · Upload · DocumentView (scan + bbox + entities + chat) · Search    │
-│  TanStack Query (кэш/инвалидация) · Zustand (auth, toasts) · WebSocket-статусы            │
-└───────────────────────────────────────────┬────────────────────────────────────────────────┘
-                                            │ /api/v1 (REST, JWT)   /api/v1/ws/documents
-┌───────────────────────────────────────────▼────────────────────────────────────────────────┐
-│                              FastAPI (async) · SQLAlchemy 2.0                              │
-│  auth · documents · search · export · system · ws        services: storage/search/export/  │
-│                                                                    pipeline/events       │
-└───────┬───────────────────────┬────────────────────────┬───────────────────────┬────────────┘
-        │                       │                        │                       │
-  ┌─────▼─────┐         ┌───────▼───────┐        ┌───────▼────────┐      ┌───────▼────────┐
-  │ PostgreSQL │         │ MinIO (S3)    │        │ Redis + Celery │      │ Ollama         │
-  │ + pgvector │         │ оригиналы +   │        │ очередь OCR /  │      │ qwen2.5:7b     │
-  │ FTS+JSONB  │         │ PNG страниц   │        │ LLM задач      │      │ bge-m3         │
-  └────────────┘         └───────────────┘        └───────┬────────┘      └───────▲────────┘
-                                                          │                       │
-                                              ┌───────────▼───────────────────────┴──────┐
-                                              │ ML-пайплайн: PyMuPDF → OpenCV → OCR →    │
-                                              │ LLM/NLP → chunking → embeddings          │
-                                              └──────────────────────────────────────────┘
-```
-
-### Локальные режимы
-
-Приложение запускается **без внешней инфраструктуры**: если PostgreSQL/MinIO/Ollama/Celery
-недоступны, используются SQLite, локальная ФС, inline-задачи и эвристический NLP-движок.
-Переключение на продуктивный контур — только переменными окружения (`DATABASE_URL`,
-`STORAGE_BACKEND`, `QUEUE_BACKEND`, `OLLAMA_URL`), код менять не нужно.
-
----
-
-## Быстрый старт (локально)
-
-Требования: Python 3.11+, Node.js 20+.
-
-### Установка одной командой
+### 1. Скачайте проект
 
 ```bash
-python scripts/check_env.py      # что уже есть: GPU, Ollama, Tesseract, Node
-./scripts/bootstrap.sh           # venv + зависимости + .env + демо-данные
-WITH_VISION=1 ./scripts/pull_models.sh   # локальные модели (LLM + bge-m3 + VLM)
-make dev                         # backend :8000 + frontend :5173 одновременно
+git clone https://github.com/Yaroslavsfedu/project_mp2.git
+cd project_mp2
 ```
 
-Демо-доступ: `demo@idp-project.ru` / `demo12345`. Полезные команды: `make check`,
-`make test`, `make evaluate`, `make benchmark`, `make load-test`, `make docker-gpu`.
-
-### Вручную (если нужен контроль над каждым шагом)
+### 2. Запустите установщик
 
 ```bash
-# 1. Бэкенд
-cd backend
-python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-PYTHONPATH=. uvicorn app.main:app --reload --port 8000
-# Swagger: http://localhost:8000/api/docs
-
-# 2. Фронтенд (в новом терминале)
-cd frontend
-npm install
-npm run dev
-# Приложение: http://localhost:5173
+./scripts/bootstrap.sh
 ```
 
-Демо-доступ (создаётся автоматически при `SEED_DEMO=true`):
+Скрипт идемпотентен (повторный запуск безопасен) и делает следующее:
 
-```
-email:    demo@idp-project.ru
-password: demo12345
-```
+1. проверяет Python 3.11+ и Node.js 20+;
+2. создаёт виртуальное окружение `backend/.venv` и ставит зависимости;
+3. создаёт `.env` из `.env.example` и генерирует случайный `SECRET_KEY`;
+4. создаёт базу SQLite `backend/data/idp.db` и применяет миграции;
+5. генерирует демо-документы в `samples/`;
+6. ставит зависимости фронтенда (`npm`);
+7. показывает итоговую проверку окружения (`scripts/check_env.py`).
 
-При первом запуске в систему загружаются демонстрационные документы из `samples/`
-(договор поставки, приказ, счёт, акт, научная статья, служебная записка) — они проходят
-полный пайплайн, чтобы интерфейс сразу был наполнен данными.
-
-> Без Ollama анализ выполняется встроенным fallback-движком (regex-NER + классификация по маркерам).
-> Интерфейс явно показывает, каким движком обработан документ.
-
-### Подключение локальной LLM
+Если нужна локальная LLM, сначала установите [Ollama](https://ollama.com), затем:
 
 ```bash
-ollama pull qwen2.5:7b-instruct      # основная модель (≈5 ГБ, Q4_K_M)
-ollama pull bge-m3                   # эмбеддинги для семантического поиска
-ollama serve                         # http://localhost:11434
+./scripts/bootstrap.sh --models    # то же + скачивание моделей (несколько ГБ)
 ```
 
-`OLLAMA_URL`, `OLLAMA_MODEL`, `EMBEDDING_MODEL` — в `.env` (см. `.env.example`).
-Для ПК с GPU используйте `.env.gpu.example` и [`docs/GPU_DEPLOY.md`](docs/GPU_DEPLOY.md).
+Модели подбираются по объёму видеопамяти (`scripts/pull_models.sh`): 7B при 8+ ГБ VRAM, 3B или 1.5B на CPU.
+Эмбеддинги `bge-m3` и VLM для сканов (`qwen2-vl:7b`, включается флагом `WITH_VISION=1`) тоже скачиваются этим скриптом.
 
-### OCR для сканов
+### 3. Запустите приложение
 
 ```bash
-# Вариант 1: Tesseract (CPU, быстро, есть Bounding Boxes)
-sudo apt-get install tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng
-
-# Вариант 2: локальная VLM (GPU) — лучше на фото, наклонах, рукописи
-ollama pull qwen2-vl:7b
-# в .env: OCR_ENGINE=ollama  (или auto: Tesseract → VLM → «нужен OCR»)
+make dev
 ```
 
-PDF с текстовым слоем, DOCX и TXT обрабатываются без OCR. Если OCR-движка нет,
-страница помечается «нужен OCR» — текст и сущности не выдумываются.
-
----
-
-## Метрики качества (измерены на эталонном датасете)
-
-Отчёт формируется автоматически: `reports/quality/quality.json` + `quality.md`,
-а также в интерфейсе **Администрирование → Качество ИИ**.
-
-Нагрузочная проверка (через запущенный API, весь стек целиком):
-
-```bash
-cd backend && PYTHONPATH=. python -m scripts.load_test --count 50 --concurrency 4
-# → reports/load_test.json: rps загрузки, p50/p95 задержки, док/мин обработки, ошибки
-```
-
-```bash
-cd backend && PYTHONPATH=. python -m scripts.evaluate
-```
-
-| Метрика | Значение | Как считается |
-|---|---|---|
-| CER | **0,02 %** | символьная ошибка распознавания (Левенштейн / длина эталона) |
-| WER | **0,19 %** | ошибка на уровне слов (Левенштейн по токенам) |
-| NER F1 | **98,97 %** (P 98,0 / R 100,0) | микро-усреднение по ФИО, организациям, датам, суммам, ИНН/ОГРН, адресам, номеру документа |
-| Точность классификации | **100 %** | 6 типов документов (договор, приказ, счёт, акт, статья, заявление) |
-| Время обработки | **0,20 с/документ** | fallback-движок без LLM (CPU, песочница) |
-
-Как читать эти цифры честно:
-
-* датасет синтетический (6 текстовых документов + 2 «скана»), поэтому CER/WER
-  показывают корректность пайплайна, а не качество OCR на реальных помятых сканах;
-* сканы (`scan_*.jpg`) помечены `requires_ocr` и попадают в метрики автоматически,
-  как только доступен Tesseract или VLM — без OCR они честно пропускаются с пометкой;
-* NER F1 измеряется regex/LLM-извлечением на эталонной разметке; на реальных
-  документах значение будет ниже — это и должен показать прогон на ваших данных;
-* производительность на GPU измеряется `scripts/benchmark.py` (см. `docs/GPU_DEPLOY.md`).
-
----
-
-## Локальный ИИ на GPU
-
-Платформа рассчитана на полностью локальный инференс; GPU-контур включается без
-изменения кода:
-
-```bash
-cp .env.gpu.example .env
-WITH_VISION=1 ./scripts/pull_models.sh         # подбор модели по VRAM
-make dev                                        # или make docker-gpu
-```
-
-| VRAM | LLM | Эмбеддинги | VLM-OCR |
-|---|---|---|---|
-| 6–8 ГБ | `qwen2.5:7b-instruct` | `bge-m3` | — |
-| 10–12 ГБ | `qwen2.5:14b-instruct` | `bge-m3` | — |
-| 12–16 ГБ | `qwen2.5:7b-instruct` | `bge-m3` | `qwen2-vl:7b` |
-| 20–24 ГБ | `qwen2.5:14b-instruct` | `bge-m3` | `qwen2-vl:7b` |
-
-Раздел **Администрирование → Система и GPU** показывает фактическое состояние:
-какие модели установлены, используется ли GPU, какой OCR-движок активен и что
-нужно донастроить. Полное руководство (Docker + CUDA, оптимизация, диагностика):
-[`docs/GPU_DEPLOY.md`](docs/GPU_DEPLOY.md).
-
----
-
-## Администрирование и аудит
-
-| Возможность | Детали |
+| Адрес | Что там |
 |---|---|
-| Пользователи и роли | `admin` / `operator` / `viewer`, блокировка учётной записи, защита от снятия последнего администратора и самоблокировки |
-| Журнал аудита | загрузка, верификация, правка, повторная обработка, удаление, изменения пользователей, запуск оценки качества; фильтры по действию и документу |
-| Метрики качества | запуск прогона датасета из интерфейса, карточки CER/WER/F1, таблица по документам, Markdown-отчёт |
-| Состояние стека | Ollama и список моделей, GPU/VRAM и рекомендация модели, OCR-движок, подсказки по настройке |
+| http://localhost:5173 | веб-интерфейс |
+| http://localhost:8000/api/docs | Swagger (API) |
 
-API: `GET /api/v1/admin/overview`, `/users`, `PATCH /users/{id}`, `/audit`,
-`GET /api/v1/admin/quality`, `POST /api/v1/admin/quality/run` — только для роли `admin`.
+Вход: **demo@idp-project.ru / demo12345** — демо-пользователь с ролью admin.
 
----
+Запуск по частям: `make api` (только backend) и `make web` (только frontend) в двух терминалах.
 
-## Запуск в Docker (продуктивный контур)
+### 4. Проверка
 
 ```bash
-cp .env.example .env
-# при необходимости измените SECRET_KEY и пароли
-
-docker compose up -d --build
-docker compose logs -f backend
-
-# Frontend (nginx):  http://localhost:8080
-# API / Swagger:     http://localhost:8000/api/docs
-# MinIO Console:     http://localhost:9001
+make check       # окружение: Python, Node, GPU, Ollama, Tesseract
+make test        # автотесты backend
+make evaluate    # качество распознавания и извлечения на демо-датасете
 ```
 
-Состав стека: `frontend` (nginx + собранный SPA), `backend` (uvicorn, 2 воркера),
-`celery_worker`, `postgres` (`pgvector/pgvector:pg16`), `redis`, `minio`, `ollama`
-+ one-shot контейнер `ollama-models`, который скачивает веса.
+### Установка вручную (без скрипта)
 
-Для GPU используйте overlay-файл: `make docker-gpu`
-(`docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build`) —
-он пробрасывает GPU в Ollama, задаёт `OLLAMA_KEEP_ALIVE`/`OLLAMA_NUM_PARALLEL`
-и докачивает VLM для OCR сканов. Требуется `nvidia-container-toolkit`.
+```bash
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cd .. && cp .env.example .env
+cd backend && PYTHONPATH=. alembic upgrade head && cd ..
+(cd frontend && npm install)
+make dev
+```
 
 ---
 
-## API (кратко)
+## Настройка (.env)
 
-Полная спецификация — Swagger `/api/docs`, OpenAPI — `/api/openapi.json`.
+Файл `.env` лежит в **корне проекта**. Основные параметры:
 
-| Метод | Путь | Назначение |
+| Переменная | По умолчанию | Назначение |
 |---|---|---|
-| POST | `/api/v1/auth/register` / `login` | Регистрация / вход (JWT) |
-| GET | `/api/v1/auth/me` | Профиль пользователя |
-| POST | `/api/v1/documents/upload` | Пакетная загрузка (multipart) |
-| GET | `/api/v1/documents` | Список: пагинация, статус, тип, дата, поиск |
-| GET | `/api/v1/documents/{id}` | Карточка: страницы, Bounding Boxes, сущности, резюме |
-| GET | `/api/v1/documents/{id}/pages/{n}/image` | PNG страницы (с JWT) |
-| PUT | `/api/v1/documents/{id}/verify` | Сохранение правок оператора |
-| POST | `/api/v1/documents/{id}/reprocess` | Повторный прогон пайплайна |
-| DELETE | `/api/v1/documents/{id}` | Удаление из БД и хранилища |
-| POST | `/api/v1/documents/{id}/chat` | RAG-вопрос по документу |
-| POST | `/api/v1/search` | `hybrid` / `fulltext` / `semantic` + фильтры |
-| GET | `/api/v1/documents/{id}/export?format=json\|csv\|docx\|md\|txt` | Экспорт карточки |
-| POST | `/api/v1/documents/export?format=xlsx\|csv` | Пакетный экспорт сводной таблицы |
-| GET | `/api/v1/dashboard/stats` | Статистика рабочего стола |
-| GET | `/api/v1/admin/overview` · `/users` · `/audit` | Админ-панель (только `admin`) |
-| PATCH | `/api/v1/admin/users/{id}` | Роль / блокировка пользователя |
-| GET/POST | `/api/v1/admin/quality` · `/quality/run` | Метрики CER/WER/F1: чтение и запуск прогона |
-| GET | `/api/v1/system/status` | Состояние стека: LLM и модели, GPU/VRAM, OCR, подсказки |
-| WS | `/api/v1/ws/documents?token=…` | Статусы и прогресс обработки |
+| `SECRET_KEY` | генерируется установщиком | подпись JWT. **Обязательно замените при общем доступе** |
+| `DATABASE_URL` | SQLite в `backend/data/idp.db` | для PostgreSQL: `postgresql+asyncpg://user:pass@host/db` |
+| `OLLAMA_URL` | `http://localhost:11434` | адрес Ollama |
+| `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | LLM |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `bge-m3` / `1024` | эмбеддинги; размерность должна совпадать с моделью |
+| `LLM_FALLBACK_ENABLED` | `true` | эвристики, если LLM недоступна |
+| `OCR_ENGINE` | `auto` | `auto` · `tesseract` · `ollama` (VLM) · `native` (только текстовый слой) |
+| `QUEUE_BACKEND` | `inline` | `inline` — фоновые задачи в процессе API; `celery` — отдельный воркер + Redis |
+| `RATE_LIMIT_ENABLED` | `true` | лимиты на вход (10/мин) и загрузку (30/мин) с одного IP |
+| `TRUST_PROXY_HEADERS` | `false` | учитывать `X-Forwarded-For` — **включайте только за своим reverse-proxy** |
 
-Пример:
-
-```bash
-TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"demo@idp-project.ru","password":"demo12345"}' | jq -r .access_token)
-
-curl -s -X POST localhost:8000/api/v1/documents/upload \
-  -H "Authorization: Bearer $TOKEN" -F "files=@samples/dogovor_postavki_47-2024.pdf"
-
-curl -s -X POST localhost:8000/api/v1/search \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"query":"неустойка за просрочку поставки","mode":"hybrid"}'
-```
+Полный список с комментариями — в [`.env.example`](.env.example).
 
 ---
 
-## Пайплайн обработки
+## OCR для сканов
 
-1. **Валидация и приём**: расширение + Magic Bytes + лимит 50 МБ → оригинал в хранилище, запись `PENDING`.
-2. **Извлечение страниц**: PDF с текстовым слоем → слова и координаты напрямую (без OCR);
-   скан → рендер 150 DPI → `preprocess` (deskew по HoughLinesP, удаление печатей в HSV, denoise,
-   адаптивный порог) → OCR (`image_to_data`); DOCX/TXT → рендер страницы для корректных Bounding Boxes.
-3. **Группировка в строки** (`_line_boxes_from_words`) — компактные, читаемые рамки для UI.
-4. **Локальный ИИ**: коррекция текста (склейка переносов, `0/О`, `1/l`), классификация,
-   NER (ФИО с падежами, организации, даты, суммы, ИНН/КПП/ОГРН/БИК, номер, адреса), резюме, ключевые слова.
-5. **Индексация**: чанки по абзацам + эмбеддинги (Ollama `bge-m3` либо hashing-fallback), сохранение в БД.
-6. **Верификация**: оператор правит текст/сущности → `VERIFIED`, экспорт в нужный формат.
+Текстовый слой PDF, DOCX и TXT распознаются без OCR. Для сканов и фото нужен один из движков:
 
-Статусы транслируются на фронтенд по WebSocket и через поллинг TanStack Query.
+- **Tesseract** (CPU, быстро, есть координаты слов):
+  - Ubuntu/Debian: `sudo apt install tesseract-ocr tesseract-ocr-rus`
+  - macOS: `brew install tesseract tesseract-lang`
+  - Windows: установщик UB-Mannheim, при установке выберите русский язык
+- **VLM через Ollama** (GPU, лучше для фото, наклонов и рукописи): `WITH_VISION=1 ./scripts/pull_models.sh`,
+  затем в `.env`: `OCR_ENGINE=ollama`.
+
+Без OCR скан получает статус `failed` с понятным сообщением, остальные документы обрабатываются.
+
+---
+
+## Работа на GPU
+
+Для машины с видеокартой NVIDIA (драйвер и NVIDIA Container Toolkit для Docker):
+
+```bash
+cp .env.gpu.example .env        # профиль GPU
+make docker-gpu                 # стек в Docker с Ollama на GPU
+```
+
+Подробности, выбор модели по VRAM и замеры скорости — в [`docs/GPU_DEPLOY.md`](docs/GPU_DEPLOY.md).
+
+---
+
+## Запуск в Docker (CPU)
+
+```bash
+make docker          # docker compose up --build
+make docker-down
+```
+
+| Адрес | Сервис |
+|---|---|
+| http://localhost:8080 | frontend (nginx) |
+| http://localhost:8000/api/docs | API |
+| http://localhost:9001 | консоль MinIO |
+
+Перед запуском в Docker измените пароли и `SECRET_KEY` в `docker-compose.yml`.
+
+---
+
+## Проверка качества
+
+Метрики на эталонном демо-датасете (`samples/ground_truth.json`), отчёт: [`reports/quality/quality.md`](reports/quality/quality.md).
+
+| Метрика | Значение | Цель ТЗ |
+|---|---|---|
+| CER (символы) | 0.02 % | ≤ 3 % |
+| WER (слова) | 0.19 % | ≤ 8 % |
+| NER F1 | 98.97 % | ≥ 85 % |
+| Точность классификации | 100 % | ≥ 90 % |
+
+**Важно:** эти цифры получены на синтетических документах с текстовым слоем и на fallback-движке
+(без OCR и без LLM). Качество на реальных сканах и с моделью Qwen нужно измерить на вашем оборудовании:
+`make evaluate` с включённой Ollama и сканами в эталонной выборке.
+
+Скорость и нагрузка: `make benchmark` (`reports/benchmark.json`) и `make load-test COUNT=50` (`reports/load_test.json`).
+
+---
+
+## API
+
+Все методы описаны в Swagger: http://localhost:8000/api/docs. Основные:
+
+| Метод и путь | Назначение |
+|---|---|
+| `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/me` | регистрация, вход (JWT), текущий пользователь |
+| `POST /api/v1/documents/upload` | пакетная загрузка |
+| `GET /api/v1/documents`, `GET /api/v1/documents/{id}` | список и карточка |
+| `GET /api/v1/documents/{id}/file` | исходный файл (с проверкой прав) |
+| `PUT /api/v1/documents/{id}/verify` | сохранение проверенных сущностей |
+| `POST /api/v1/documents/{id}/reprocess` | повторная обработка |
+| `POST /api/v1/search` | поиск (`fulltext`, `semantic`, `hybrid`) |
+| `POST /api/v1/documents/{id}/chat` | вопрос по документу |
+| `GET /api/v1/documents/{id}/export?format=json\|csv\|docx\|md\|txt` | экспорт одного документа |
+| `POST /api/v1/documents/export?format=csv\|xlsx&ids=...` | пакетный экспорт |
+| `WS /api/v1/ws/documents?token=...` | статусы обработки в реальном времени |
+| `GET /api/v1/system/status` | состояние LLM, OCR, очереди |
+
+Администрирование (только роль admin): `/api/v1/admin/users`, `/admin/audit`, `/admin/overview`, `/admin/quality`.
 
 ---
 
 ## Тесты
 
 ```bash
-cd backend
-PYTHONPATH=. pytest -q
-```
-
-Покрыто (44 теста): нормализация/стемминг/чанкинг, эвристический NER и классификация
-(договор ≠ акт), экспортёры (JSON/CSV/DOCX/XLSX), интеграционный сценарий «загрузка → OCR →
-NER → поиск → чат → экспорт → верификация → удаление», метрики CER/WER/F1 и
-fuzzy-сопоставление сущностей, журнал аудита, RBAC админ-эндпоинтов, rate limiting,
-формат `/system/status`.
-
-CI (`.github/workflows/ci.yml`) дополнительно генерирует демо-данные, считает метрики
-качества, проверяет окружение и собирает фронтенд.
-
-```bash
-cd frontend && npm run build   # проверка типов + production-сборка
+make test        # 56 тестов backend: API, пайплайн, RBAC, безопасность, экспорт, LLM-fallback
+cd frontend && npx tsc --noEmit && npm run build
 ```
 
 ---
@@ -344,73 +230,69 @@ cd frontend && npm run build   # проверка типов + production-сбо
 ## Структура репозитория
 
 ```
-├── AI/context/project.md        # полная спецификация проекта (SSoT)
-├── backend/
-│   ├── app/
-│   │   ├── api/v1/              # auth, documents, search, export, admin, system, ws
-│   │   ├── core/                # config, security, database, ratelimit, hardware (GPU)
-│   │   ├── models/ schemas/     # SQLAlchemy 2.0 и Pydantic v2 (+ audit_logs)
-│   │   ├── services/            # storage, search, export, pipeline, audit, quality, seed
-│   │   └── ml_pipeline/         # preprocessor, pdf_handler, ocr_engine (+VLM), llm_service, renderer, celery
-│   ├── migrations/              # Alembic: схема, audit_logs, GIN-индексы PostgreSQL
-│   ├── scripts/                 # generate_samples, evaluate (CER/WER/F1), benchmark, check_env
-│   └── tests/
-├── frontend/src/
-│   ├── api/                     # axios, endpoints, WebSocket, authed images
-│   ├── components/{layout,ui,upload,viewer,chat}
-│   ├── pages/                   # Dashboard, Documents, Upload, DocumentView, Search, Admin, Login
-│   ├── store/ types/ lib/
-├── scripts/                     # bootstrap.sh, dev.sh, pull_models.sh, check_env.py
-├── docs/GPU_DEPLOY.md           # развёртывание на GPU, модели, диагностика
-├── samples/                     # демо-документы + ground_truth.json (эталон разметки)
-├── reports/                     # quality.json/md, benchmark.json (генерируются)
-├── Makefile · docker-compose.yml · docker-compose.gpu.yml
+backend/
+  app/
+    api/v1/        маршруты: auth, documents, search, export, admin, ws, system
+    core/          настройки, БД, JWT, rate limit, аудит-хелперы
+    ml_pipeline/   PDF, препроцессинг, OCR, LLM, рендер страниц
+    services/      пайплайн, поиск, экспорт, хранилище, векторы, метрики качества
+    models/        ORM-модели; schemas/ — Pydantic-схемы
+  migrations/      миграции Alembic
+  scripts/         generate_samples, evaluate, benchmark, load_test
+  tests/           автотесты
+frontend/          React 18 + TypeScript + Vite + Tailwind
+samples/           демо-документы и эталонная разметка
+reports/           отчёты о качестве, скорости и нагрузке
+scripts/           bootstrap.sh (установка), check_env.py, dev.sh, pull_models.sh
+docs/GPU_DEPLOY.md инструкция для GPU-сервера
+AI/context/        спецификация проекта
 ```
 
 ---
 
-## Безопасность и соответствие требованиям
+## Безопасность
 
-* Данные не передаются во внешние сети: LLM, OCR и эмбеддинги работают локально.
-* Оригиналы и страницы доступны только по JWT (в prod — presigned URL MinIO, TTL 15 мин).
-* Проверка реального типа файла по Magic Bytes, очистка имён от Path Traversal, лимит размера.
-* Пароли — bcrypt; доступ к эндпоинтам — JWT; роли `admin/operator/viewer` (RBAC).
-* Логи не содержат содержимого документов; ошибки обработки сохраняются в `documents.error_message`.
-* Журнал аудита фиксирует все значимые действия (загрузка, правка, верификация, удаление,
-  изменение ролей) с IP-адресом и доступен только администратору.
-* Rate limiting: 10 попыток входа/мин и 30 загрузок/мин на IP (скользящее окно в памяти
-  процесса; для нескольких воркеров лимиты считаются на каждый процесс — в проде
-  дублируется на уровне nginx/API-gateway).
-* Администратор не может снять роль с себя или заблокировать себя; система не даёт
-  остаться без активного администратора.
+- Пароли хранятся как bcrypt-хеши; доступ по JWT; роли admin / operator / viewer с проверкой на каждом маршруте.
+- Роль нельзя задать при регистрации: новые пользователи получают `operator`, назначить admin может только администратор.
+- Файлы проверяются по сигнатуре; ответы с файлами отдаются с безопасным типом (`application/octet-stream` для неизвестных
+  и HTML-подобных типов), чтобы загрузка не превращалась в XSS.
+- Лимит 50 МБ на файл; имена файлов очищаются; хранилище не отдаёт файлы без проверки прав.
+- Журнал аудита: вход, загрузка, верификация, экспорт, административные действия.
+- Перед использованием вне лаборатории: смените `SECRET_KEY` и пароль демо-пользователя, включите HTTPS на reverse-proxy,
+  ограничьте доступ к портам 8000 / 9001 сетью.
 
 ---
 
-## Roadmap
+## Соответствие ТЗ
 
-* **Этап 1–2 (готово):** архитектура, загрузка, OCR, Bounding Boxes, UI-каркас.
-* **Этап 3 (готово):** локальная LLM (Ollama) + fallback, NER, классификация, суммаризация, RAG.
-* **Этап 4 (готово):** гибридный поиск, Split-Screen верификация, экспорт JSON/CSV/DOCX/MD/TXT/XLSX.
-* **Этап 5 (готово):** замер CER/WER/F1 на эталонном датасете + отчёт, журнал аудита,
-  админ-панель с ролями, rate limiting, `tsvector`+GIN для PostgreSQL, VLM-OCR,
-  GPU-профиль с авто-подбором модели, скрипты установки и диагностики.
-* **Этап 6 (следующее):** нагрузочное тестирование на 1000+ документов, HNSW-индекс
-  pgvector при больших объёмах, PaddleOCR/VLM для сложной вёрстки и таблиц, OSD-поворот
-  страниц, fine-tune промптов на корпусе ИКТИБ, shadcn/ui для унификации компонентов.
+| Раздел ТЗ | Статус | Комментарий |
+|---|---|---|
+| §3.1 Загрузка, пакетность, предпросмотр, зум/поворот | ✅ | |
+| §3.2 Препроцессинг, OCR с bbox и confidence | ✅ / ⚠️ | Координаты и confidence — у Tesseract. VLM-OCR даёт текст без координат слов |
+| §3.3 LLM: коррекция, классификация, NER, резюме, JSON, RAG | ✅ | Качество моделей Qwen на реальных данных не измерено (нет GPU в среде разработки) |
+| §3.4 Полнотекстовый и семантический поиск, фильтры, Split-Screen | ✅ | Семантика без Ollama работает на детерминированных эмбеддингах-заглушках, поэтому качество ниже |
+| §3.5 Экспорт JSON/CSV/DOCX/TXT/MD, пакетный CSV/XLSX | ✅ | |
+| §9 API | ✅ | Верификация — `PUT`, перезапуск — `POST` |
+| §10 Безопасность: bcrypt, JWT, RBAC, presigned 15 мин, лимит 50 МБ | ✅ / ⚠️ | Для MinIO — presigned-ссылки с TTL 15 мин. В локальном режиме файлы отдаёт API с проверкой прав, без presigned-ссылок |
+| §10 python-magic | ⚠️ | Сигнатуры проверяются собственным кодом, без системной библиотеки libmagic |
+| §13 Метрики CER/WER, F1 | ✅ / ⚠️ | Измерено на демо-датасете, не на реальных сканах |
+| §13 Время на страницу < 5–8 с на GPU, поиск < 200 мс на 1000+ док. | ⚠️ | На CPU fallback ~0.3 с на документ. GPU-замеры и выборка 1000+ документов — на целевом сервере |
 
-### Ограничения текущей версии (честно)
-
-* Метрики CER/WER в репозитории получены на синтетических документах с текстовым слоем;
-  качество OCR на реальных сканах нужно измерить на вашем оборудовании (`make evaluate`).
-* Docker-образы и GPU-профиль не собирались в среде разработки (нет Docker/NVIDIA):
-  конфигурация проверена статически, первый запуск на целевом сервере — за вами.
-* Rate limiting хранится в памяти процесса; в многопроцессном контуре нужен общий
-  счётчик (Redis) или лимиты на reverse-proxy.
+Что **не проверено** в среде разработки: сборка Docker-образов, GPU-профиль, Tesseract на сканах,
+модели Ollama на реальных документах. Первый запуск на целевом оборудовании — за вами.
 
 ---
 
-## Команда и роли
+## Ограничения
 
-Аналитик · UI/UX-дизайнер · Фронтенд-разработчик · Бэкенд-разработчик · ML/OCR-инженер ·
-Тестировщик · DevOps-инженер — зоны ответственности описаны в разделе 12 спецификации
-[`AI/context/project.md`](AI/context/project.md).
+- Лимиты (rate limit) считаются в памяти процесса: при нескольких воркерах лимит действует на каждый воркер отдельно.
+- PostgreSQL: полнотекстовый поиск и векторный индекс pgvector требуют расширений `pg_trgm` и `vector`
+  (в образе из `docker-compose.yml` они есть). Без `pg_trgm` поиск работает, но без триграммного индекса по имени файла.
+- Фоновая обработка по умолчанию идёт в процессе API (`QUEUE_BACKEND=inline`). Для нагрузки используйте Celery + Redis.
+
+---
+
+## Команда
+
+Проект ИКТИБ ЮФУ. Наставник: Семенов В. Е., м.н.с. НИИ МВС ЮФУ, руководитель СНО «Экспонента».
+Распределение ролей — раздел 12 [спецификации](AI/context/project.md).

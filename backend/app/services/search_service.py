@@ -12,8 +12,8 @@ from sqlalchemy import and_, or_, select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ml_pipeline.llm_service import embed_texts
+from app.services.vector_store import is_postgres, top_chunks_pg, top_chunks_python
 from app.ml_pipeline.text_utils import (
-    cosine,
     expand_query,
     make_snippet,
     normalize_text,
@@ -121,6 +121,95 @@ async def _postgres_fulltext_hits(
     return hits
 
 
+async def _semantic_hits(
+    db: AsyncSession, query_vector: list[float], engine: str, filters: SearchFilters, limit: int, terms: list[str]
+) -> list[SearchHit]:
+    """Семантический поиск: pgvector (HNSW) в PostgreSQL, косинус в Python — в SQLite."""
+    found: list[tuple[str, str, str | None, str, int, str, float]] = []
+    if is_postgres(db):
+        extra, params = _pg_filter_sql(filters)
+        try:
+            for hit in await top_chunks_pg(
+                db, query_vector, engine, limit=limit, extra_sql=extra, params=params
+            ):
+                found.append((hit.document_id, hit.filename, hit.doc_type, hit.status,
+                              hit.page_number, hit.chunk_text, hit.similarity))
+        except Exception:  # noqa: BLE001 - деградируем к поиску по JSON-векторам
+            found = []
+    if not found:
+        stmt = select(DocumentChunk, Document).join(Document, Document.id == DocumentChunk.document_id)
+        stmt = _apply_filters(stmt, filters)
+        rows = (await db.execute(stmt)).all()
+        candidates = []
+        for chunk, document in rows:
+            if filters.organization and filters.organization.lower() not in chunk.chunk_text.lower():
+                continue
+            candidates.append((chunk, document))
+        ranked = top_chunks_python([c for c, _ in candidates], query_vector, engine, limit)
+        doc_by_chunk = {id(c): d for c, d in candidates}
+        for chunk, similarity in ranked:
+            document = doc_by_chunk[id(chunk)]
+            found.append((document.id, document.filename, document.doc_type, document.status,
+                          chunk.page_number, chunk.chunk_text, similarity))
+
+    hits: list[SearchHit] = []
+    for doc_id, filename, doc_type, status, page_number, chunk_text, similarity in found:
+        if similarity < 0.12:
+            continue
+        snippet, _ = make_snippet(normalize_text(chunk_text), terms)
+        hits.append(
+            SearchHit(
+                document_id=doc_id,
+                filename=filename,
+                doc_type=doc_type,
+                status=status,
+                page_number=page_number,
+                snippet=snippet,
+                score=round(similarity, 4),
+                match_type=f"semantic:{engine}",
+            )
+        )
+    return hits
+
+
+def _pg_filter_sql(filters: SearchFilters) -> tuple[str, dict]:
+    clauses: list[str] = []
+    params: dict = {}
+    if filters.doc_type:
+        clauses.append("d.doc_type = :f_doc_type")
+        params["f_doc_type"] = filters.doc_type
+    if filters.status:
+        clauses.append("d.status = :f_status")
+        params["f_status"] = filters.status
+    if filters.date_from:
+        clauses.append("d.created_at >= :f_date_from")
+        params["f_date_from"] = filters.date_from
+    if filters.date_to:
+        clauses.append("d.created_at <= :f_date_to")
+        params["f_date_to"] = filters.date_to
+    if filters.organization:
+        clauses.append("c.chunk_text ILIKE :f_org")
+        params["f_org"] = f"%{filters.organization}%"
+    return " AND ".join(clauses), params
+
+
+async def rank_document_chunks(
+    db: AsyncSession, document_id: str, query_vector: list[float], engine: str, limit: int
+) -> list[tuple[int, str]]:
+    """Наиболее релевантные чанки одного документа для RAG-ответа: [(страница, текст)]."""
+    if is_postgres(db):
+        try:
+            hits = await top_chunks_pg(db, query_vector, engine, limit=limit, document_id=document_id)
+            return [(h.page_number, h.chunk_text) for h in hits]
+        except Exception:  # noqa: BLE001
+            pass
+    rows = (
+        await db.execute(select(DocumentChunk).where(DocumentChunk.document_id == document_id))
+    ).scalars().all()
+    ranked = top_chunks_python(list(rows), query_vector, engine, limit)
+    return [(chunk.page_number, chunk.chunk_text) for chunk, _ in ranked]
+
+
 async def search_documents(db: AsyncSession, query: str, filters: SearchFilters, mode: str, limit: int) -> SearchResponse:
     started = time.perf_counter()
     terms = expand_query(query)
@@ -176,29 +265,8 @@ async def search_documents(db: AsyncSession, query: str, filters: SearchFilters,
     # ---------- семантическая часть ----------
     if mode in ("semantic", "hybrid"):
         vectors, engine = await embed_texts([query])
-        query_vector = vectors[0]
-        stmt = select(DocumentChunk, Document).join(Document, Document.id == DocumentChunk.document_id)
-        stmt = _apply_filters(stmt, filters)
-        rows = (await db.execute(stmt)).all()
-        for chunk, document in rows:
-            if filters.organization and filters.organization.lower() not in chunk.chunk_text.lower():
-                continue
-            similarity = cosine(query_vector, chunk.embedding or [])
-            if similarity < 0.12:
-                continue
-            snippet, _ = make_snippet(normalize_text(chunk.chunk_text), raw_terms or stems)
-            hits.append(
-                SearchHit(
-                    document_id=document.id,
-                    filename=document.filename,
-                    doc_type=document.doc_type,
-                    status=document.status,
-                    page_number=chunk.page_number,
-                    snippet=snippet,
-                    score=round(similarity, 4),
-                    match_type=f"semantic:{engine}",
-                )
-            )
+        semantic = await _semantic_hits(db, vectors[0], engine, filters, limit * 3, raw_terms or stems)
+        hits.extend(semantic)
 
     # ---------- слияние (RRF-подобное) ----------
     merged: dict[tuple[str, int | None], SearchHit] = {}
