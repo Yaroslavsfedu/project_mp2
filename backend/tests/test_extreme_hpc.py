@@ -329,3 +329,36 @@ def test_switching_rerank_bits_rebuilds_index(tmp_path):
     MmapVectorIndex(tmp_path / "sw", 256, rerank_bits=8).append([f"x{i}" for i in range(50)], v)
     other = MmapVectorIndex(tmp_path / "sw", 256, rerank_bits=4)
     assert other.count == 0  # другой способ хранения — индекс несовместим, перестраивается из таблицы
+
+
+# ---------- FTS5: двухшаговый путь без фильтров и путь с JOIN (фильтр, который ничего не отсекает) ----------
+
+@pytest.mark.anyio
+async def test_fts5_two_step_order_matches_joined_path():
+    import uuid
+
+    from app.core.database import SessionLocal
+    from app.models.document import Document, DocumentChunk, DocumentStatus
+    from app.models.user import User
+    from app.schemas.document import SearchFilters
+    from app.services.search_service import search_documents
+
+    token = f"тестовыйтерм{uuid.uuid4().hex[:6]}"
+    async with SessionLocal() as session:
+        user = User(email=f"fts-{uuid.uuid4().hex[:8]}@example.ru", password_hash="x", full_name="t", role="operator")
+        session.add(user)
+        await session.flush()
+        for i in range(15):  # по документу на чанк: поиск выдаёт один хит на документ
+            doc = Document(user_id=user.id, filename=f"fts-{uuid.uuid4().hex[:6]}.txt", s3_key_original="k",
+                           status=DocumentStatus.COMPLETED, doc_type="Договор")
+            session.add(doc)
+            await session.flush()
+            text = f"{token} договор поставки " + " ".join(["слово"] * (i % 6)) + f" дополнение {i}"
+            session.add(DocumentChunk(document_id=doc.id, page_number=1, chunk_index=0, chunk_text=text,
+                                      embedding=[], embedding_model="fallback"))
+        await session.commit()
+        plain = await search_documents(session, token, SearchFilters(), "fulltext", 15)
+        filtered = await search_documents(session, token, SearchFilters(doc_type="Договор"), "fulltext", 15)
+    assert len(plain.hits) == len(filtered.hits) == 15
+    assert [h.document_id for h in plain.hits] == [h.document_id for h in filtered.hits]
+    assert all(token in (h.snippet or "").lower() for h in plain.hits)

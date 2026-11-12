@@ -6,7 +6,7 @@ VENV := $(BACKEND)/.venv
 ACTIVATE := . $(VENV)/bin/activate
 
 .DEFAULT_GOAL := help
-.PHONY: help install check samples api web dev test evaluate benchmark search-bench bulk-ingest scale-bench load-test models migrate docker docker-gpu docker-down logs psql
+.PHONY: help install check samples api web dev test evaluate benchmark search-bench bulk-ingest scale-bench extreme-bench load-test models migrate docker docker-gpu docker-down logs psql
 
 help: ## показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -43,6 +43,9 @@ bulk-ingest: ## пакетная потоковая загрузка папки:
 
 scale-bench: ## масштаб: 2k→100k документов на PostgreSQL (DATABASE_URL), замер списка/FTS/векторов
 	cd $(BACKEND) && PYTHONPATH=. $(ACTIVATE) && python -m scripts.scale_benchmark $(if $(SIZES),--sizes $(SIZES),)
+
+extreme-bench: ## итерация 5: 100k/1M — float32 vs линейный int8 vs IVF int8/int4, FTS5 (≈ 15 мин, 2 CPU)
+	cd $(BACKEND) && PYTHONPATH=. $(ACTIVATE) && python -m scripts.extreme_benchmark $(if $(SIZES),--sizes $(SIZES),)
 
 search-bench: ## поиск на 1000+ документах: замер fulltext/semantic/hybrid (DOCS=, API= для HTTP)
 	cd $(BACKEND) && PYTHONPATH=. $(ACTIVATE) && python -m scripts.search_benchmark --docs $(or $(DOCS),1000) $(if $(API),--api-url $(API),)
