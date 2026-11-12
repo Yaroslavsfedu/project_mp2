@@ -31,7 +31,7 @@ export const authApi = {
   login: (payload: LoginPayload) => api.post<TokenResponse>("/auth/login", payload).then((r) => r.data),
   register: (payload: LoginPayload & { full_name?: string }) =>
     api.post<TokenResponse>("/auth/register", payload).then((r) => r.data),
-  me: () => api.get<User>("/auth/me").then((r) => r.data),
+  me: () => api.get<User>("/auth/me", { timeout: 15_000 }).then((r) => r.data),
 };
 
 export interface DocumentQuery {
